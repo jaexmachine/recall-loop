@@ -14,6 +14,7 @@ import { BlurTargetView, BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; manual?: boolean };
 type StudyAttempt = { id: string; question: string; mode: Pace; outcome: 'correct' | 'missed' | 'self-rated-ready' | 'needs-review'; createdAt: string };
@@ -197,7 +198,6 @@ async function extractDocumentText(file: File): Promise<string> {
     return slides.join('\n\n');
   }
   if (extension === 'pdf') {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     if (typeof window !== 'undefined') {
       const basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname.slice(0, window.location.pathname.lastIndexOf('/') + 1);
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(`${basePath}pdf.worker.min.mjs`, window.location.origin).toString();
