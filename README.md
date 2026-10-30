@@ -1,6 +1,6 @@
 # Recall Loop 0.1
 
-A web-first study workspace for learners who need a focused, practical review loop. New workspaces start empty; demo material is opt-in. Materials and progress stay in the current browser and no account is required.
+A web-first study workspace for learners who want a focused review loop. Create subject folders, keep related notes and files together, then study from one selected file or the subject as a whole. Each learner's materials and progress stay in that browser; the shared website does not contain their study content.
 
 ## Run locally
 
@@ -9,31 +9,38 @@ npm install
 npm run web
 ```
 
+## Build the shareable web app
+
+```bash
+npm run build:web
+```
+
+This creates the static site in `dist/`. The repository includes Vercel settings for this export. To host it free and have it update after pushes to GitHub:
+
+1. In Vercel, import the GitHub repository `jaexmachine/recall-loop`.
+2. Keep the repository root as the project root and select `main` for production deploys.
+3. Deploy. The Vercel configuration runs the web export and serves `dist/` as the static site.
+
+Vercel gives the site a shareable `*.vercel.app` address. Each push to `main` triggers a new build and updates the live site. A pull request gets a preview deploy before it reaches the live version.
+
 ## Included in 0.1
 
 - Cram, Steady, and Deep study paths.
-- Paste study notes and formative questions, or upload `.txt` and `.md` files.
+- Subject folders with pasted notes, formative questions, and uploaded source files.
+- Source upload for PDF, DOCX, PPTX, TXT, and Markdown files, extracted in the browser.
+- Choose one source file, just pasted notes, or all source material in a subject as the study baseline.
 - Transparent keyword matching from questions to source paragraphs.
 - Review suggested links, move them to another paragraph, or clear them.
 - Start with retrieval, open a linked source after a miss, then retry.
-- Demo questions receive objective feedback; answers for custom materials are self-rated.
-- Draft practice prompts from notes using local sentence patterns. Review and edit every draft before studying.
 - Recent attempts and progress metrics saved in browser local storage.
-- Clear workspace resets saved materials and attempt history.
-- Responsive, web-first interface with reduced-motion-aware visual effects.
+- Clear workspace confirmation before deleting saved folders and progress.
+- Responsive web interface with reduced-motion-aware visual effects.
 
 ## Limits of this release
 
-- Matching and prompt drafting are local heuristics, not an AI model. Links are suggestions and must be verified.
-- Custom free-response answers are not automatically graded.
-- Files are limited to plain text and Markdown. PDF/DOCX extraction is not included.
-- Data stays in this browser profile. There is no account, cloud sync, or backup yet.
-- Android packaging, native file picking, and native persistent storage are not included in this web-first release.
+- Text extraction runs locally in the browser; study files are not uploaded to the hosting provider. Scanned PDFs that contain only images need OCR and cannot be read yet.
+- Large extracted files are limited to keep browser storage usable. Files over 20 MB or extracted text over the browser workspace limit are rejected.
+- Matching and practice-question drafting use local heuristics, not an AI model. Suggested links must be verified, and custom answers are not automatically graded.
+- Materials and progress are stored separately in each browser profile. There is no account, cloud sync, or backup yet.
+- Android packaging and native file picking are not included in this web-first build.
 - Register is a visual placeholder and does not create an account.
-
-## Build direction
-
-1. Test the study flow on real, permitted class materials.
-2. Improve passage matching and prompt drafting against manually reviewed examples.
-3. Add document parsing and native Android storage.
-4. Evaluate whether an AI explanation layer improves source accuracy and learner outcomes before connecting a model.

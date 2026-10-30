@@ -1,0 +1,13 @@
+{
+  "buildCommand": "npm run build:web",
+  "outputDirectory": "dist",
+  "devCommand": "npm run web",
+  "cleanUrls": true,
+  "framework": null,
+  "rewrites": [
+    {
+      "source": "/:path*",
+      "destination": "/"
+    }
+  ]
+}
