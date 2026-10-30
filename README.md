@@ -1,6 +1,6 @@
 # Recall Loop 0.1
 
-A web-first study workspace for learners who need a focused, practical review loop. This release keeps materials and progress in the current browser and does not require an account.
+A web-first study workspace for learners who need a focused, practical review loop. New workspaces start empty; demo material is opt-in. Materials and progress stay in the current browser and no account is required.
 
 ## Run locally
 
@@ -19,6 +19,7 @@ npm run web
 - Demo questions receive objective feedback; answers for custom materials are self-rated.
 - Draft practice prompts from notes using local sentence patterns. Review and edit every draft before studying.
 - Recent attempts and progress metrics saved in browser local storage.
+- Clear workspace resets saved materials and attempt history.
 - Responsive, web-first interface with reduced-motion-aware visual effects.
 
 ## Limits of this release
