@@ -184,7 +184,7 @@ function highlightedPassage(passage: string, question: string) {
 
 async function extractDocumentText(file: File): Promise<StudySegment[]> {
   const extension = file.name.split('.').pop()?.toLowerCase();
-  if (extension === 'txt' || extension === 'md' || extension === 'markdown') return [{ label: `${file.name} · text`, text: await file.text() }];
+  if (extension === 'txt' || extension === 'md' || extension === 'markdown') return (await file.text()).split(/\n\s*\n/).map((text, index) => ({ label: `${file.name} · paragraph ${index + 1}`, text: text.trim() })).filter((segment) => segment.text);
   const data = await file.arrayBuffer();
   if (extension === 'docx') {
     const result = await mammoth.extractRawText({ arrayBuffer: data });
