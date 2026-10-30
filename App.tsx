@@ -237,6 +237,7 @@ export default function App() {
   const [activeSubjectId, setActiveSubjectId] = useState<string | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
   const [sourceScope, setSourceScope] = useState<'subject' | 'file' | 'notes'>('subject');
   const [newSubjectName, setNewSubjectName] = useState('');
   const [matches, setMatches] = useState<Match[]>([]);
@@ -428,7 +429,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!name) { notify('Enter a subject name, such as Physics.'); return; }
     const created: Subject = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, notes: '', questionsText: '', files: [] };
     setSubjects((previous) => [...previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject), created]);
-    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setSourceScope('subject'); setDemoMaterial(false); setNewSubjectName('');
+    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setDemoMaterial(false); setNewSubjectName('');
     notify(`${name} is ready. Add notes or upload source files to this subject.`);
   };
 
@@ -437,7 +438,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!next) return;
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject));
     setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([next.notes, ...next.files.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), splitQuestions(next.questionsText)));
-    setSelectedSourceId(null); setSourceScope('subject'); setDemoMaterial(false);
+    setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setDemoMaterial(false);
   };
 
   const openSubject = (id: string) => {
@@ -449,9 +450,20 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     setSelectedSourceId(file.id); setSourceScope('file'); setMatches(buildMatches(file.text, questionList));
   };
 
+  const activateSubjectFile = (file: StudyFile) => {
+    if (file.role === 'questions') {
+      setQuestionsText(file.text);
+      notify(`${file.name} loaded into the questions editor.`);
+      return;
+    }
+    setSourceToFile(file);
+    setPreviewSourceId((previous) => previous === file.id ? null : file.id);
+  };
+
   const removeSubjectFile = (fileId: string) => {
     const updatedFiles = activeSubject?.files.filter((file) => file.id !== fileId) || [];
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
+    if (previewSourceId === fileId) setPreviewSourceId(null);
     if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([notes, ...updatedFiles.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), questionList)); }
   };
 
@@ -476,7 +488,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const clearWorkspace = () => {
     setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]);
-    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
+    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
     setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
   };
 
@@ -601,7 +613,14 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       <Pressable onPress={() => { setFolderOpen(false); setConfirmClear(false); }} style={{ alignSelf: 'flex-start', paddingVertical: 5, paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>← All subject folders</Text></Pressable>
       <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STUDY BASELINE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([notes, ...activeSubject.files.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(notes, questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
-        {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 9 }}><Pressable onPress={() => file.role === 'source' ? setSourceToFile(file) : setQuestionsText(file.text)} style={{ flex: 1, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material · click to study this file' : 'Formative questions · click to load in the editor'}</Text></Pressable><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)}><Text style={{ color: palette.muted, fontWeight: '800', padding: 8 }}>Remove</Text></Pressable></View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
+        {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
+            <View style={{ flex: 1, minWidth: 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View>
+            <ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} />
+            <Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)}><Text style={{ color: palette.muted, fontWeight: '800', padding: 8 }}>Remove</Text></Pressable>
+          </View>
+          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 6 }}><Text style={styles.label}>EXTRACTED TEXT PREVIEW</Text><Text selectable numberOfLines={10} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{file.text}</Text><Text style={styles.small}>This file is selected as the current study source.</Text></View>}
+        </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
       </View>
       <View style={styles.row}>
         <View testID="torch-block" style={[styles.card, { flex: 1, minWidth: 290, gap: 12 }]}>
