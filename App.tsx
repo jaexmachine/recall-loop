@@ -16,9 +16,10 @@ import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; manual?: boolean };
+type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; sourceLabel?: string; manual?: boolean };
 type StudyAttempt = { id: string; question: string; mode: Pace; outcome: 'correct' | 'missed' | 'self-rated-ready' | 'needs-review'; createdAt: string };
-type StudyFile = { id: string; name: string; text: string; role: 'source' | 'questions' };
+type StudySegment = { label: string; text: string };
+type StudyFile = { id: string; name: string; text: string; segments?: StudySegment[]; role: 'source' | 'questions' };
 type Subject = { id: string; name: string; notes: string; questionsText: string; files: StudyFile[] };
 type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; sourceScope: 'subject' | 'file' | 'notes' };
 type Pace = 'cram' | 'steady' | 'deep';
@@ -106,8 +107,13 @@ function draftPracticeQuestions(notes: string) {
 const stop = new Set('what which where when does did is are the a an and or in on of to for from with into this that take takes happens happen produces produce most each one'.split(' '));
 function terms(s: string) { return [...new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2 && !stop.has(w)))]; }
 
-function buildMatches(notes: string, questions: string[]): Match[] {
-  const passages = notes.split(/\n\s*\n/).map((s, index) => ({ passage: s.trim(), passageIndex: index + 1 })).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage));
+function asStudySegments(input: string | StudySegment[], sourceName = 'Subject notes'): StudySegment[] {
+  if (Array.isArray(input)) return input;
+  return input.split(/\n\s*\n/).map((text, index) => ({ label: `${sourceName} · paragraph ${index + 1}`, text: text.trim() })).filter((segment) => segment.text);
+}
+
+function buildMatches(input: string | StudySegment[], questions: string[]): Match[] {
+  const passages = asStudySegments(input).flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   return questions.map((question) => {
     const qTerms = terms(question);
     const ranked = passages.map(({ passage, passageIndex }) => {
@@ -176,26 +182,26 @@ function highlightedPassage(passage: string, question: string) {
   return <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 26 }}>{parts}</Text>;
 }
 
-async function extractDocumentText(file: File): Promise<string> {
+async function extractDocumentText(file: File): Promise<StudySegment[]> {
   const extension = file.name.split('.').pop()?.toLowerCase();
-  if (extension === 'txt' || extension === 'md' || extension === 'markdown') return file.text();
+  if (extension === 'txt' || extension === 'md' || extension === 'markdown') return [{ label: `${file.name} · text`, text: await file.text() }];
   const data = await file.arrayBuffer();
   if (extension === 'docx') {
     const result = await mammoth.extractRawText({ arrayBuffer: data });
-    return result.value.trim();
+    return result.value.split(/\n\s*\n/).map((text, index) => ({ label: `${file.name} · paragraph ${index + 1}`, text: text.trim() })).filter((segment) => segment.text);
   }
   if (extension === 'pptx') {
     const archive = await JSZip.loadAsync(data);
     const slideNames = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort((a, b) => Number(a.match(/slide(\d+)/)?.[1]) - Number(b.match(/slide(\d+)/)?.[1]));
-    const slides: string[] = [];
+    const slides: StudySegment[] = [];
     for (const [index, name] of slideNames.entries()) {
       const xml = await archive.file(name)?.async('text');
       if (!xml) continue;
       const document = new DOMParser().parseFromString(xml, 'application/xml');
       const paragraphs = [...document.getElementsByTagName('a:p')].map((paragraph) => [...paragraph.getElementsByTagName('a:t')].map((node) => node.textContent || '').join('').trim()).filter(Boolean);
-      if (paragraphs.length) slides.push(`SLIDE ${index + 1}\n${paragraphs.join('\n')}`);
+      if (paragraphs.length) slides.push({ label: `${file.name} · slide ${index + 1}`, text: paragraphs.join('\n\n') });
     }
-    return slides.join('\n\n');
+    return slides;
   }
   if (extension === 'pdf') {
     if (typeof window !== 'undefined') {
@@ -203,7 +209,7 @@ async function extractDocumentText(file: File): Promise<string> {
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(`${basePath}pdf.worker.min.mjs`, window.location.origin).toString();
     }
     const pdf = await pdfjs.getDocument({ data: new Uint8Array(data), isEvalSupported: false }).promise;
-    const pages: string[] = [];
+    const pages: StudySegment[] = [];
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent();
@@ -215,9 +221,9 @@ async function extractDocumentText(file: File): Promise<string> {
         if (lineY === null || Math.abs(y - lineY) > 2) { lines.push(item.str.trim()); lineY = y; }
         else lines[lines.length - 1] += ` ${item.str.trim()}`;
       });
-      pages.push(`PAGE ${pageNumber}\n${lines.join(' ')}`);
+      pages.push({ label: `${file.name} · page ${pageNumber}`, text: lines.join(' ') });
     }
-    return pages.join('\n\n');
+    return pages;
   }
   throw new Error('Choose a PDF, DOCX, PPTX, TXT, or Markdown file.');
 }
@@ -351,14 +357,19 @@ export default function App() {
   const activeSubject = subjects.find((subject) => subject.id === activeSubjectId) || null;
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
   const studySourceText = sourceScope === 'file' && selectedSource ? selectedSource.text : sourceScope === 'notes' ? notes : [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.text) || [])].filter(Boolean).join('\n\n');
+  const studySourceSegments = sourceScope === 'file' && selectedSource
+    ? (selectedSource.segments?.length ? selectedSource.segments : asStudySegments(selectedSource.text, selectedSource.name))
+    : sourceScope === 'notes'
+      ? asStudySegments(notes)
+      : [...asStudySegments(notes), ...(activeSubject?.files.filter((file) => file.role === 'source').flatMap((file) => file.segments?.length ? file.segments : asStudySegments(file.text, file.name)) || [])];
   const questionList = useMemo(() => splitQuestions(questionsText), [questionsText]);
+  const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
   const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0;
   const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : (questionList[questionIndex] || 'What is the main idea of this module?');
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
   const correctAnswer = currentDemoQuiz.correct;
   const hasNextQuestion = mode !== 'cram' && questionIndex < questionList.length - 1;
-  const sourceParagraphs = studySourceText.split(/\n\s*\n/).map((text) => text.trim()).filter(Boolean);
-  const sourceOptions = sourceParagraphs.map((passage, index) => ({ passage, passageIndex: index + 1 })).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage));
+  const sourceOptions = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   const moduleTitle = sourceScope === 'file' && selectedSource ? selectedSource.name.replace(/\.[^.]+$/, '') : activeSubject?.name || notes.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || 'Untitled module';
   const displayModuleTitle = demoMaterial ? 'Cellular respiration' : !hasStudyContent ? 'No study set yet' : moduleTitle.length > 52 ? `${moduleTitle.slice(0, 49)}…` : moduleTitle;
   const currentMatch = matches.find((match) => match.question === currentQuestion && (match.overlap > 0 || (match.manual && match.passageIndex !== null)));
@@ -371,9 +382,9 @@ export default function App() {
     if (match.question !== question || !sourceOptions.length) return match;
     const current = sourceOptions.findIndex((option) => option.passageIndex === match.passageIndex);
     const next = current === -1 ? 0 : (current + direction + sourceOptions.length) % sourceOptions.length;
-    return { ...match, passage: sourceOptions[next].passage, passageIndex: sourceOptions[next].passageIndex, overlap: 0, manual: true };
+    return { ...match, passage: sourceOptions[next].passage, passageIndex: sourceOptions[next].passageIndex, sourceLabel: sourceOptions[next].sourceLabel, overlap: 0, manual: true };
   }));
-  const clearMatchSource = (question: string) => setMatches((previous) => previous.map((match) => match.question === question ? { ...match, passage: 'No source link selected. Review manually or choose a paragraph.', passageIndex: null, overlap: 0, manual: true } : match));
+  const clearMatchSource = (question: string) => setMatches((previous) => previous.map((match) => match.question === question ? { ...match, passage: 'No source link selected. Review manually or choose a passage.', passageIndex: null, sourceLabel: undefined, overlap: 0, manual: true } : match));
 
   const notify = (message: string) => {
     if (Platform.OS === 'web') setNotice(message);
@@ -404,16 +415,16 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       if (!file) return;
       if (file.size > 20 * 1024 * 1024) throw new Error('Files must be 20 MB or smaller.');
       const extracted = await extractDocumentText(file);
-      if (!extracted.trim()) throw new Error('No selectable text was found. Scanned PDFs need OCR before they can be used.');
-      const content = kind === 'questions' ? extracted.replace(/^(?:PAGE|SLIDE)\s+\d+\s*$/gim, '').trim() : extracted;
+      const content = extracted.map((segment) => segment.text).join('\n\n').trim();
+      if (!content) throw new Error('No selectable text was found. Scanned PDFs need OCR before they can be used.');
       const savedCharacters = subjects.reduce((total, subject) => total + subject.notes.length + subject.questionsText.length + subject.files.reduce((sum, savedFile) => sum + savedFile.text.length, 0), 0) + notes.length + questionsText.length;
       if (content.length > 350_000 || savedCharacters + content.length > 450_000) throw new Error('This file has too much extracted text for browser storage. Split it into shorter files or remove older files first.');
-      const added: StudyFile = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, text: content, role: kind === 'module' ? 'source' : 'questions' };
+      const added: StudyFile = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, text: content, segments: extracted, role: kind === 'module' ? 'source' : 'questions' };
       setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, added] } : subject));
       if (kind === 'module') {
         setSelectedSourceId(added.id);
         setSourceScope('file');
-        setMatches(buildMatches(content, questionList));
+        setMatches(buildMatches(extracted, questionList));
       } else setQuestionsText(content);
       setDemoMaterial(false);
       notify(`${file.name} was added to ${activeSubject.name}. The text was extracted in this browser.`);
@@ -437,7 +448,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     const next = subjects.find((subject) => subject.id === id);
     if (!next) return;
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject));
-    setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([next.notes, ...next.files.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), splitQuestions(next.questionsText)));
+    setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([...asStudySegments(next.notes), ...next.files.filter((file) => file.role === 'source').flatMap((file) => file.segments?.length ? file.segments : asStudySegments(file.text, file.name))], splitQuestions(next.questionsText)));
     setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setDemoMaterial(false);
   };
 
@@ -447,7 +458,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const setSourceToFile = (file: StudyFile) => {
-    setSelectedSourceId(file.id); setSourceScope('file'); setMatches(buildMatches(file.text, questionList));
+    setSelectedSourceId(file.id); setSourceScope('file'); setMatches(buildMatches(file.segments?.length ? file.segments : asStudySegments(file.text, file.name), questionList));
   };
 
   const activateSubjectFile = (file: StudyFile) => {
@@ -464,11 +475,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     const updatedFiles = activeSubject?.files.filter((file) => file.id !== fileId) || [];
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
     if (previewSourceId === fileId) setPreviewSourceId(null);
-    if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([notes, ...updatedFiles.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), questionList)); }
+    if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([...asStudySegments(notes), ...updatedFiles.filter((file) => file.role === 'source').flatMap((file) => file.segments?.length ? file.segments : asStudySegments(file.text, file.name))], questionList)); }
   };
 
   const matchQuestions = () => {
-    const next = buildMatches(studySourceText, questionList);
+    const next = buildMatches(studySourceSegments, questionList);
     setMatches(next);
     setPage('import');
   };
@@ -482,7 +493,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     const numbered = drafts.map((question, index) => `${index + 1}. ${question}`).join('\n');
     setQuestionsText(numbered);
     setDemoMaterial(false);
-    setMatches(buildMatches(studySourceText, drafts));
+    setMatches(buildMatches(studySourceSegments, drafts));
     notify(`${drafts.length} practice question drafts added. They were generated locally from text patterns, so review and edit them before studying.`);
   };
 
@@ -514,17 +525,17 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const quizPanel = demoMaterial ? <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? `QUESTION ${questionIndex + 1} · ${phase === 'diagnostic' && questionIndex === 0 ? 'START WITH RECALL' : 'RECALL CHECK'}` : 'AFTER REVIEW · RETRIEVAL CHECK'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text><Text style={styles.body}>Choose your best answer. This is practice, not a grade.</Text>
     {currentDemoQuiz.options.map((option, i) => <Pressable key={i} onPress={() => submitAnswer(i)} style={{ borderWidth: 1, borderColor: answer === i ? (i === correctAnswer ? '#43c982' : '#db785b') : palette.line, backgroundColor: answer === i ? (i === correctAnswer ? 'rgba(33,129,91,0.28)' : 'rgba(217,120,91,0.20)') : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 14 }}><Text style={{ color: palette.ink, fontWeight: '600', fontSize: 14 }}>{String.fromCharCode(65 + i)}. {option}</Text></Pressable>)}
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === correctAnswer ? 'rgba(33,129,91,0.20)' : 'rgba(217,120,91,0.16)', borderWidth: 1, borderColor: answer === correctAnswer ? 'rgba(67,201,130,0.48)' : 'rgba(217,120,91,0.45)' }}><Text style={{ color: answer === correctAnswer ? '#8ce0ae' : '#f0a38d', fontWeight: '800' }}>{answer === correctAnswer ? 'Correct.' : 'Not quite — check the source passage.'}</Text><Text style={[styles.small, { marginTop: 4, color: '#c3cfca' }]}>{currentDemoQuiz.feedback[answer]}</Text></View>}
-    {answer !== null && (answer !== correctAnswer ? <ActionButton label={currentMatch ? `Open source · paragraph ${currentMatch.passageIndex} →` : 'Review notes manually →'} onPress={openSourcePassage} /> : <ActionButton label={phase === 'diagnostic' ? 'Review the key passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={continueSession} />)}
+    {answer !== null && (answer !== correctAnswer ? <ActionButton label={currentMatch ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →'} onPress={openSourcePassage} /> : <ActionButton label={phase === 'diagnostic' ? 'Review the key passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={continueSession} />)}
   </View> : <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? 'BEFORE REVIEW · YOUR QUESTION' : 'AFTER REVIEW · YOUR QUESTION'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text><Text style={styles.body}>Try answering from memory. This prototype records your self-rating; it does not claim to grade custom answers yet.</Text>
     <TextInput value={answerDraft} onChangeText={setAnswerDraft} multiline placeholder="Type a short answer or key points…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 90 }]} />
     <Text style={styles.label}>HOW DID THAT FEEL?</Text>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton compact label="I could explain it" onPress={() => submitAnswer(1)} /><ActionButton compact secondary label="Not sure yet" onPress={() => submitAnswer(0)} /></View>
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === 1 ? 'rgba(33,129,91,0.20)' : 'rgba(245,216,94,0.12)', borderWidth: 1, borderColor: answer === 1 ? 'rgba(67,201,130,0.42)' : 'rgba(245,216,94,0.32)' }}><Text style={{ color: answer === 1 ? '#8ce0ae' : '#fff2ad', fontWeight: '800' }}>{answer === 1 ? 'Self-rated: ready to move on.' : 'Self-rated: prioritize this for review.'}</Text><Text style={[styles.small, { marginTop: 4 }]}>{answer === 1 ? 'Your answer is recorded as ready based on your self-rating.' : 'You marked this as uncertain. Revisit the matched source, then try recalling it again.'}</Text></View>}
-    {answer !== null && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={answer === 0 ? (currentMatch?.passageIndex ? `Open source · paragraph ${currentMatch.passageIndex} →` : 'Review notes manually →') : phase === 'diagnostic' ? 'Review the linked passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={answer === 0 || phase === 'diagnostic' ? openSourcePassage : continueSession} />{answer === 0 && phase === 'check' && <ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish session'} onPress={continueSession} />}</View>}
+    {answer !== null && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={answer === 0 ? (currentMatch?.passageIndex ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →') : phase === 'diagnostic' ? 'Review the linked passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={answer === 0 || phase === 'diagnostic' ? openSourcePassage : continueSession} />{answer === 0 && phase === 'check' && <ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish session'} onPress={continueSession} />}</View>}
   </View>;
 
-  const reviewPanel = <View style={[styles.card, { gap: 16 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}><View><Text style={styles.label}>{phase === 'module' ? 'DEEP MODE · FULL MODULE' : currentMatch?.manual ? 'MANUAL SOURCE · VERIFY THIS LINK' : currentMatch ? 'YELLOW = LINKED TO YOUR FORMATIVE' : 'NO AUTOMATIC QUESTION LINK'}</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 20, marginTop: 6 }}>{phase === 'module' ? 'Read the full module first' : 'Read the relevant part first'}</Text>{currentMatch?.passageIndex && <Text style={[styles.small, { marginTop: 5 }]}>{currentMatch.manual ? 'Manually selected' : phase === 'module' ? 'Linked source' : 'Suggested source'} · paragraph {currentMatch.passageIndex}</Text>}</View>{phase !== 'module' && <View style={{ backgroundColor: currentMatch ? palette.blueSoft : '#f2f3ef', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start' }}><Text style={{ color: currentMatch ? '#386174' : palette.muted, fontSize: 11, fontWeight: '800' }}>{currentMatch?.manual ? 'MANUAL LINK · VERIFY' : currentMatch ? 'EVIDENCE LINK · NOT A PREDICTION' : 'REVIEW SOURCE MANUALLY'}</Text></View>}</View>
-    {phase === 'module' ? <View style={{ gap: 10 }}>{sourceParagraphs.map((paragraph, index) => { const isMatch = currentMatch?.passageIndex === index + 1; return <View key={`module-${index}`} style={{ backgroundColor: isMatch ? 'rgba(245,216,94,0.08)' : 'transparent', borderLeftWidth: isMatch ? 3 : 0, borderLeftColor: palette.yellow, borderRadius: 10, padding: isMatch ? 12 : 5, gap: 6 }}>{isMatch && <Text style={{ color: '#fff2ad', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 }}>LIKELY SOURCE · PARAGRAPH {index + 1}</Text>}{isMatch ? highlightedPassage(paragraph, currentQuestion) : <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{paragraph}</Text>}</View>; })}</View> : currentMatch ? highlightedPassage(reviewPassage, currentQuestion) : <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 26 }}>{reviewPassage}</Text>}
+  const reviewPanel = <View style={[styles.card, { gap: 16 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}><View><Text style={styles.label}>{phase === 'module' ? 'DEEP MODE · FULL MODULE' : currentMatch?.manual ? 'MANUAL SOURCE · VERIFY THIS LINK' : currentMatch ? 'YELLOW = LINKED TO YOUR FORMATIVE' : 'NO AUTOMATIC QUESTION LINK'}</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 20, marginTop: 6 }}>{phase === 'module' ? 'Read the full module first' : 'Read the relevant part first'}</Text>{currentMatch?.passageIndex && <Text style={[styles.small, { marginTop: 5 }]}>{currentMatch.manual ? 'Manually selected' : phase === 'module' ? 'Linked source' : 'Suggested source'} · {currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`}</Text>}</View>{phase !== 'module' && <View style={{ backgroundColor: currentMatch ? palette.blueSoft : '#f2f3ef', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start' }}><Text style={{ color: currentMatch ? '#386174' : palette.muted, fontSize: 11, fontWeight: '800' }}>{currentMatch?.manual ? 'MANUAL LINK · VERIFY' : currentMatch ? 'EVIDENCE LINK · NOT A PREDICTION' : 'REVIEW SOURCE MANUALLY'}</Text></View>}</View>
+    {phase === 'module' ? <View style={{ gap: 10 }}>{sourceParagraphs.map((paragraph, index) => { const isMatch = currentMatch?.passage === paragraph.text; return <View key={`module-${index}`} style={{ backgroundColor: isMatch ? 'rgba(245,216,94,0.08)' : 'transparent', borderLeftWidth: isMatch ? 3 : 0, borderLeftColor: palette.yellow, borderRadius: 10, padding: isMatch ? 12 : 5, gap: 6 }}>{(index === 0 || sourceParagraphs[index - 1]?.sourceLabel !== paragraph.sourceLabel) && <Text style={{ color: '#b8e8c7', fontSize: 11, fontWeight: '800' }}>{paragraph.sourceLabel}</Text>}{isMatch && <Text style={{ color: '#fff2ad', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 }}>LIKELY SOURCE · {paragraph.sourceLabel}</Text>}{isMatch ? highlightedPassage(paragraph.text, currentQuestion) : <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{paragraph.text}</Text>}</View>; })}</View> : currentMatch ? highlightedPassage(reviewPassage, currentQuestion) : <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 26 }}>{reviewPassage}</Text>}
     {phase !== 'module' && currentMatch && <Text style={[styles.small, { marginBottom: -7 }]}>Stronger gold marks a likely answer phrase when detected · softer gold marks related question terms.</Text>}
     <View style={{ backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 14, gap: 6 }}><Text style={styles.label}>TERMS FROM THE QUESTION</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 22, fontWeight: '700' }}>{terms(currentQuestion).slice(0, 6).join(' · ') || 'No key terms detected'}</Text></View>
     {phase !== 'module' && currentMatch && <View style={{ backgroundColor: 'rgba(245,216,94,0.10)', borderColor: 'rgba(245,216,94,0.28)', borderWidth: 1, borderRadius: 11, padding: 12 }}><Text style={{ color: '#fff2ad', fontSize: 13, fontWeight: '800' }}>Matched formative question</Text><Text style={{ color: palette.ink, fontSize: 13, marginTop: 4 }}>{currentQuestion}</Text><Text style={[styles.small, { marginTop: 5 }]}>Suggested by shared keywords. Verify that this passage really supports the question.</Text></View>}
@@ -612,14 +623,14 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </View> : activeSubject ? <View style={{ gap: 16 }}>
       <Pressable onPress={() => { setFolderOpen(false); setConfirmClear(false); }} style={{ alignSelf: 'flex-start', paddingVertical: 5, paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>← All subject folders</Text></Pressable>
       <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STUDY BASELINE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([notes, ...activeSubject.files.filter((file) => file.role === 'source').map((file) => file.text)].filter(Boolean).join('\n\n'), questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(notes, questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STUDY BASELINE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([...asStudySegments(notes), ...activeSubject.files.filter((file) => file.role === 'source').flatMap((file) => file.segments?.length ? file.segments : asStudySegments(file.text, file.name))], questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(asStudySegments(notes), questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
         {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
             <View style={{ flex: 1, minWidth: 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View>
             <ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} />
             <Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)}><Text style={{ color: palette.muted, fontWeight: '800', padding: 8 }}>Remove</Text></Pressable>
           </View>
-          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 6 }}><Text style={styles.label}>EXTRACTED TEXT PREVIEW</Text><Text selectable numberOfLines={10} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{file.text}</Text><Text style={styles.small}>This file is selected as the current study source.</Text></View>}
+          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>EXTRACTED TEXT PREVIEW</Text>{(file.segments?.length ? file.segments : asStudySegments(file.text, file.name)).slice(0, 5).map((segment, index) => <View key={`${segment.label}-${index}`} style={{ gap: 4 }}><Text style={{ color: '#b8e8c7', fontSize: 12, fontWeight: '800' }}>{segment.label}</Text><Text selectable numberOfLines={3} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{segment.text}</Text></View>)}<Text style={styles.small}>This file is selected as the current study source.</Text></View>}
         </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
       </View>
       <View style={styles.row}>
@@ -637,7 +648,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       <Text style={styles.small}>PDF, DOCX, PPTX, TXT, and Markdown text is extracted locally in your browser. Scanned PDFs need OCR. Matching and question drafts use transparent local rules, not a connected AI service.</Text>
       <View testID="torch-block" style={[styles.card, { gap: 14 }]}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>MATCH REVIEW</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 5 }}>Check the evidence before studying</Text></View><View style={{ backgroundColor: palette.yellowSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}><Text style={{ color: '#705d00', fontSize: 11, fontWeight: '800' }}>KEYWORD BASELINE</Text></View></View>
-        {matches.map((match, i) => <View key={`${i}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 7 }}><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 14 }}>Q{i + 1}. {match.question}</Text><View style={{ backgroundColor: match.overlap ? 'rgba(245,216,94,0.10)' : 'rgba(255,255,255,0.04)', borderLeftWidth: match.overlap ? 3 : 1, borderLeftColor: match.overlap ? 'rgba(245,216,94,0.76)' : palette.line, borderRadius: 9, padding: 11 }}><Text style={{ color: palette.ink, fontSize: 13, lineHeight: 19 }}>{match.passage}</Text></View><Text style={styles.small}>{match.manual ? (match.passageIndex ? `Manual source · paragraph ${match.passageIndex}` : 'Source link cleared · choose a paragraph or review manually') : match.overlap ? `Suggested source · ${match.overlap} shared key term${match.overlap === 1 ? '' : 's'} · please verify` : 'No automatic link · manual review needed'}</Text>{sourceOptions.length > 0 && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary label="Previous source" onPress={() => stepMatchSource(match.question, -1)} /><ActionButton compact secondary label="Next source" onPress={() => stepMatchSource(match.question, 1)} />{match.passageIndex !== null && <ActionButton compact secondary label="Clear link" onPress={() => clearMatchSource(match.question)} />}</View>}</View>)}
+        {matches.map((match, i) => <View key={`${i}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 7 }}><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 14 }}>Q{i + 1}. {match.question}</Text><View style={{ backgroundColor: match.overlap ? 'rgba(245,216,94,0.10)' : 'rgba(255,255,255,0.04)', borderLeftWidth: match.overlap ? 3 : 1, borderLeftColor: match.overlap ? 'rgba(245,216,94,0.76)' : palette.line, borderRadius: 9, padding: 11 }}><Text style={{ color: palette.ink, fontSize: 13, lineHeight: 19 }}>{match.passage}</Text></View><Text style={styles.small}>{match.sourceLabel ? `${match.sourceLabel} · ` : ''}{match.manual ? (match.passageIndex ? 'Manual source · verify this passage' : 'Source link cleared · choose a passage or review manually') : match.overlap ? `Suggested source · ${match.overlap} shared key term${match.overlap === 1 ? '' : 's'} · please verify` : 'No automatic link · manual review needed'}</Text>{sourceOptions.length > 0 && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary label="Previous source" onPress={() => stepMatchSource(match.question, -1)} /><ActionButton compact secondary label="Next source" onPress={() => stepMatchSource(match.question, 1)} />{match.passageIndex !== null && <ActionButton compact secondary label="Clear link" onPress={() => clearMatchSource(match.question)} />}</View>}</View>)}
         {!matches.length && <Text style={styles.body}>Add a few questions, then match them to see suggested passages.</Text>}
       </View>
     </View> : null}
