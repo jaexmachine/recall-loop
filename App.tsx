@@ -520,8 +520,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   </View>;
 
   const navItems = [
-    { id: 'home' as const, icon: '⌂', label: 'Study home' },
-    { id: 'import' as const, icon: '▤', label: 'My materials' },
+    { id: 'home' as const, icon: '⌂', label: 'Home' },
+    { id: 'import' as const, icon: '▤', label: 'Materials' },
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
 
