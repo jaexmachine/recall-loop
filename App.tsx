@@ -84,6 +84,20 @@ async function clearOriginalDocuments() {
   });
   db.close();
 }
+
+async function replaceOriginalDocuments(documents: OriginalDocument[]) {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('documents', 'readwrite');
+    const store = transaction.objectStore('documents');
+    store.clear();
+    documents.forEach((document) => store.put(document));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not restore original files.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Restore was cancelled before completion.'));
+  });
+  db.close();
+}
 const demoQuiz = [
   { question: 'Where does glycolysis take place, and what is its net ATP yield?', options: ['In the cytoplasm; net gain of 2 ATP', 'In the mitochondrial matrix; net gain of 30 ATP', 'At the inner mitochondrial membrane; no ATP made'], correct: 0, feedback: ['Glycolysis happens in the cytoplasm and produces a net gain of two ATP.', 'The mitochondrial matrix is where the citric acid cycle takes place. Glycolysis happens in the cytoplasm and has a net yield of 2 ATP.', 'The inner mitochondrial membrane is where oxidative phosphorylation happens. Glycolysis instead occurs in the cytoplasm and yields 2 ATP net.'] },
   { question: 'Which stage produces most of the ATP during cellular respiration?', options: ['Glycolysis', 'The citric acid cycle', 'Oxidative phosphorylation'], correct: 2, feedback: ['Glycolysis makes a small net gain of two ATP. Most ATP is made during oxidative phosphorylation.', 'The citric acid cycle produces some ATP, but oxidative phosphorylation produces most of it.', 'Oxidative phosphorylation produces most of the ATP as hydrogen ions flow through ATP synthase.'] },
@@ -316,7 +330,9 @@ export default function App() {
   const [demoMaterial, setDemoMaterial] = useState(false);
   const [answerDraft, setAnswerDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmRestoreBackup, setConfirmRestoreBackup] = useState(false);
   const [notice, setNotice] = useState('');
   const [storageReady, setStorageReady] = useState(Platform.OS !== 'web');
 
@@ -521,6 +537,94 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       notify(error instanceof Error ? error.message : 'Could not read that file. Try pasting the text instead.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const exportWorkspaceBackup = async () => {
+    if (Platform.OS !== 'web') { notify('Workspace backup is available in the web version.'); return; }
+    try {
+      setBackupBusy(true);
+      const backupSubjects = subjects.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject);
+      const workspace: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: backupSubjects, activeSubjectId, selectedSourceId, sourceScope };
+      const archive = new JSZip();
+      const originals: { id: string; name: string; type: string }[] = [];
+      let originalBytes = 0;
+      for (const subject of backupSubjects) {
+        for (const studyFile of subject.files) {
+          if (!/^[a-zA-Z0-9_-]+$/.test(studyFile.id)) continue;
+          const original = await getOriginalDocument(studyFile.id).catch(() => null);
+          if (!original) continue;
+          originalBytes += original.blob.size;
+          if (originalBytes > 100 * 1024 * 1024) throw new Error('This backup would be larger than 100 MB. Remove some large files and try again.');
+          archive.file(`originals/${studyFile.id}`, original.blob);
+          originals.push({ id: studyFile.id, name: original.name, type: original.type });
+        }
+      }
+      archive.file('recall-loop-backup.json', JSON.stringify({ format: 'recall-loop-backup', version: 1, createdAt: new Date().toISOString(), workspace, originals }));
+      const blob = await archive.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 5 } });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `recall-loop-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      notify(`Backup downloaded with ${backupSubjects.length} folder${backupSubjects.length === 1 ? '' : 's'} and ${originals.length} original file${originals.length === 1 ? '' : 's'}. Keep it somewhere private.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not create a workspace backup.');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const restoreWorkspaceBackup = async () => {
+    if (Platform.OS !== 'web') { notify('Workspace restore is available in the web version.'); return; }
+    try {
+      setBackupBusy(true);
+      const picker = document.createElement('input');
+      picker.type = 'file'; picker.accept = '.zip,application/zip';
+      const file = await new Promise<File | null>((resolve) => { picker.onchange = () => resolve(picker.files?.[0] || null); picker.click(); });
+      if (!file) return;
+      if (file.size > 100 * 1024 * 1024) throw new Error('Backup files must be 100 MB or smaller.');
+      const archive = await JSZip.loadAsync(await file.arrayBuffer(), { checkCRC32: true });
+      const uncompressedSize = Object.values(archive.files).reduce((total, item) => total + Number((item as any)._data?.uncompressedSize || 0), 0);
+      if (uncompressedSize > 150 * 1024 * 1024) throw new Error('This ZIP expands beyond the 150 MB restore limit. Nothing was restored.');
+      const manifestFile = archive.file('recall-loop-backup.json');
+      if (!manifestFile) throw new Error('This ZIP does not contain a Recall Loop backup.');
+      const manifest = JSON.parse(await manifestFile.async('text')) as { format?: string; version?: number; workspace?: Partial<SavedWorkspace>; originals?: { id: string; name: string; type: string }[] };
+      const incoming = manifest.workspace;
+      if (manifest.format !== 'recall-loop-backup' || manifest.version !== 1 || !incoming || !Array.isArray(incoming.subjects)) throw new Error('This backup format is invalid or unsupported.');
+      const validSubjects = incoming.subjects.every((subject) => !!subject && typeof subject.id === 'string' && typeof subject.name === 'string' && typeof subject.notes === 'string' && typeof subject.questionsText === 'string' && Array.isArray(subject.files) && subject.files.every((studyFile) => !!studyFile && typeof studyFile.id === 'string' && typeof studyFile.name === 'string' && typeof studyFile.text === 'string' && (studyFile.role === 'source' || studyFile.role === 'questions') && (studyFile.segments === undefined || (Array.isArray(studyFile.segments) && studyFile.segments.every((segment) => !!segment && typeof segment.label === 'string' && typeof segment.text === 'string')))));
+      if (!validSubjects) throw new Error('The backup contains incomplete folder or file data. Nothing was restored.');
+      const textSize = incoming.subjects.reduce((total, subject) => total + subject.notes.length + subject.questionsText.length + subject.files.reduce((sum, studyFile) => sum + studyFile.text.length, 0), 0);
+      if (textSize > 450_000) throw new Error('This backup exceeds the current browser workspace text limit. Nothing was restored.');
+      const originals: OriginalDocument[] = [];
+      let restoredOriginalBytes = 0;
+      for (const item of manifest.originals || []) {
+        if (!item || !/^[a-zA-Z0-9_-]+$/.test(item.id) || typeof item.name !== 'string' || typeof item.type !== 'string') continue;
+        const originalFile = archive.file(`originals/${item.id}`);
+        if (originalFile) {
+          const extractedBlob = await originalFile.async('blob');
+          const blob = new Blob([extractedBlob], { type: item.type });
+          restoredOriginalBytes += blob.size;
+          if (restoredOriginalBytes > 100 * 1024 * 1024) throw new Error('The extracted originals exceed 100 MB. Nothing was restored.');
+          originals.push({ id: item.id, name: item.name, type: item.type, blob });
+        }
+      }
+      await replaceOriginalDocuments(originals);
+      const restoredSubjects = incoming.subjects as Subject[];
+      const restoredActiveId = restoredSubjects.some((subject) => subject.id === incoming.activeSubjectId) ? incoming.activeSubjectId! : restoredSubjects[0]?.id || null;
+      const active = restoredSubjects.find((subject) => subject.id === restoredActiveId);
+      setSubjects(restoredSubjects); setActiveSubjectId(restoredActiveId); setNotes(active?.notes || incoming.notes || ''); setQuestionsText(active?.questionsText || incoming.questionsText || '');
+      setDemoMaterial(incoming.demoMaterial === true); setMatches(Array.isArray(incoming.matches) ? incoming.matches as Match[] : []);
+      setAttempted(Number.isFinite(incoming.attempted) ? Number(incoming.attempted) : 0); setCorrect(Number.isFinite(incoming.correct) ? Number(incoming.correct) : 0);
+      setHistory(Array.isArray(incoming.history) ? incoming.history as StudyAttempt[] : []); setSelectedSourceId(typeof incoming.selectedSourceId === 'string' ? incoming.selectedSourceId : null);
+      setSourceScope(incoming.sourceScope === 'file' || incoming.sourceScope === 'notes' ? incoming.sourceScope : 'subject');
+      setFolderOpen(false); setPreviewSourceId(null); setSourceReader(null); setConfirmRestoreBackup(false); setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
+      notify(`Restored ${restoredSubjects.length} folder${restoredSubjects.length === 1 ? '' : 's'} and ${originals.length} original file${originals.length === 1 ? '' : 's'}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not restore this backup. Your current workspace was kept.');
+    } finally {
+      setBackupBusy(false);
     }
   };
 
@@ -759,6 +863,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const reviewCount = history.filter((attempt) => attempt.outcome === 'missed' || attempt.outcome === 'needs-review').length;
   const insightsScreen = <View style={styles.content}>
     <View><Text style={styles.label}>LEARN FROM YOUR SESSIONS</Text><Text style={[styles.title, { marginTop: 7 }]}>Progress, with context</Text><Text style={[styles.body, { marginTop: 7, maxWidth: 700 }]}>Your attempts are stored on this browser. Demo answers are scored against the key; answers to your own materials are tracked by your self-rating.</Text></View>
+    <View testID="torch-block" style={[styles.card, { gap: 11 }]}><Text style={styles.label}>WORKSPACE BACKUP</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>Keep a copy of your study space</Text><Text style={styles.body}>Download folders, notes, questions, progress, and saved original files as a private ZIP. Restore it in another browser to move your workspace.</Text><View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap' }}><ActionButton label={backupBusy ? 'Preparing backup…' : 'Download backup'} onPress={() => void exportWorkspaceBackup()} /><ActionButton secondary label="Restore from backup" onPress={() => setConfirmRestoreBackup(true)} /></View>{confirmRestoreBackup && <View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(245,216,94,0.4)', borderRadius: 12, padding: 12, backgroundColor: 'rgba(245,216,94,0.06)' }}><Text style={[styles.small, { flex: 1, minWidth: 220, color: '#fff2ad' }]}>Restoring replaces the folders and progress in this browser. Choose a Recall Loop ZIP backup to continue.</Text><ActionButton compact secondary label="Cancel" onPress={() => setConfirmRestoreBackup(false)} /><ActionButton compact label="Choose backup…" onPress={() => void restoreWorkspaceBackup()} /></View>}</View>
     <View style={styles.row}>{[
       { label: 'TOTAL ATTEMPTS', value: String(attempted), note: 'saved in this workspace', tone: palette.blueSoft },
       { label: 'READY / CORRECT', value: String(readyCount), note: 'demo score or your self-rating', tone: palette.greenSoft },
