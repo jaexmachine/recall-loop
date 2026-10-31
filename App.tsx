@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { BlurTargetView, BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
+import Svg, { Path } from 'react-native-svg';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -744,8 +745,18 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   ];
 
   const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide ? 0 : 'auto', transform: [{ translateY: 22 }] }]}>
-    <Text accessibilityElementsHidden style={{ color: '#94dfa9', fontSize: 36, lineHeight: 40, fontWeight: '800' }}>∞</Text>
-    <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>Recall L<Text style={{ color: palette.yellow }}>∞</Text>p</Text>
+    <Svg accessibilityElementsHidden width={42} height={38} viewBox="0 0 44 40" fill="none">
+      <Path d="M4 7.5C10.2 4.4 16.2 5.7 22 9.3C27.8 5.7 33.8 4.4 40 7.5V32.1C33.7 29.1 27.7 30.1 22 34C16.3 30.1 10.3 29.1 4 32.1V7.5Z" stroke="#94dfa9" strokeWidth={2.3} strokeLinejoin="round" />
+      <Path d="M22 9.7V33.3" stroke="#94dfa9" strokeWidth={2} strokeLinecap="round" />
+      <Path d="M8.7 20C12.1 14.5 16.2 14.5 22 20C27.8 25.5 31.9 25.5 35.3 20C31.9 14.5 27.8 14.5 22 20C16.2 25.5 12.1 25.5 8.7 20Z" stroke="#f5d85e" strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+    <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+      <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.6 }}>Recall L</Text>
+      <Svg accessibilityElementsHidden width={21} height={18} viewBox="0 0 36 24" fill="none" style={{ marginHorizontal: 1 }}>
+        <Path d="M2 12C6.1 4.4 11.6 4.4 18 12C24.4 19.6 29.9 19.6 34 12C29.9 4.4 24.4 4.4 18 12C11.6 19.6 6.1 19.6 2 12Z" stroke="#fff" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+      </Svg>
+      <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.6 }}>p</Text>
+    </View>
   </Pressable>
   const registerButton = <Pressable accessibilityRole="button" style={{ paddingVertical: 10, paddingHorizontal: 20, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(210,235,227,0.20)', backgroundColor: 'rgba(5,16,12,0.94)', transform: [{ translateY: 22 }] }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
   const pinnedNav = <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
