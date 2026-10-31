@@ -135,9 +135,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: '800', color: palette.ink, letterSpacing: -0.7 },
   body: { fontSize: 14, color: palette.muted, lineHeight: 21 },
   small: { fontSize: 12, color: palette.muted, lineHeight: 18 },
-  button: { backgroundColor: '#197447', paddingVertical: 13, paddingHorizontal: 16, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  secondaryButton: { borderWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  input: { minHeight: 140, backgroundColor: 'rgba(5,14,11,0.62)', borderWidth: 1, borderColor: palette.line, borderRadius: 12, padding: 13, color: palette.ink, fontSize: 14, lineHeight: 21, textAlignVertical: 'top' },
+  button: { minHeight: 44, backgroundColor: '#197447', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  secondaryButton: { minHeight: 44, borderWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 11, paddingHorizontal: 14, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  input: { minHeight: 140, backgroundColor: 'rgba(5,14,11,0.62)', borderWidth: 1, borderColor: palette.line, borderRadius: 12, padding: 13, color: palette.ink, fontSize: 16, lineHeight: 23, textAlignVertical: 'top' },
 });
 
 function splitQuestions(raw: string) {
@@ -300,13 +300,15 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
 }
 
 function ActionButton({ label, onPress, secondary = false, compact = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean }) {
-  return <Pressable onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14 }}>{label}</Text></Pressable>;
+  return <Pressable accessibilityRole="button" onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
 }
 
 export default function App() {
   const { width } = useWindowDimensions();
   const wide = width > 900;
+  const compact = width <= 640;
   const ambientRef = useRef<React.ComponentRef<typeof View>>(null);
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
   const [page, setPage] = useState<'home' | 'import' | 'study' | 'insights'>('home');
   const [notes, setNotes] = useState('');
   const [questionsText, setQuestionsText] = useState('');
@@ -335,6 +337,10 @@ export default function App() {
   const [confirmRestoreBackup, setConfirmRestoreBackup] = useState(false);
   const [notice, setNotice] = useState('');
   const [storageReady, setStorageReady] = useState(Platform.OS !== 'web');
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [page, folderOpen, activeSubjectId]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -744,7 +750,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
 
-  const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide ? 0 : 'auto', transform: [{ translateY: 22 }] }]}>
+  const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto' }]}>
     <Svg accessibilityElementsHidden width={42} height={38} viewBox="0 0 44 40" fill="none">
       <Path d="M4 7.5C10.2 4.4 16.2 5.7 22 9.3C27.8 5.7 33.8 4.4 40 7.5V32.1C33.7 29.1 27.7 30.1 22 34C16.3 30.1 10.3 29.1 4 32.1V7.5Z" stroke="#94dfa9" strokeWidth={2.3} strokeLinejoin="round" />
       <Path d="M22 9.7V33.3" stroke="#94dfa9" strokeWidth={2} strokeLinecap="round" />
@@ -752,15 +758,17 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </Svg>
     <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.7 }}>Recall Loop</Text>
   </Pressable>
-  const registerButton = <Pressable accessibilityRole="button" style={{ paddingVertical: 10, paddingHorizontal: 20, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(210,235,227,0.20)', backgroundColor: 'rgba(5,16,12,0.94)', transform: [{ translateY: 22 }] }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
+  const registerButton = <Pressable accessibilityRole="button" style={{ minHeight: 44, paddingVertical: 10, paddingHorizontal: 18, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(210,235,227,0.20)', backgroundColor: 'rgba(5,16,12,0.94)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
   const pinnedNav = <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
-    {navItems.map((item) => <Pressable key={item.id} onPress={() => setPage(item.id)} style={{ paddingVertical: 9, paddingHorizontal: 11, borderRadius: 18, backgroundColor: page === item.id ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: page === item.id ? 'rgba(90,210,141,0.28)' : 'transparent' }}><Text style={{ color: page === item.id ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>)}
+    {navItems.map((item) => <Pressable key={item.id} onPress={() => setPage(item.id)} style={{ minHeight: 42, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 18, backgroundColor: page === item.id ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: page === item.id ? 'rgba(90,210,141,0.28)' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: page === item.id ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>)}
   </View>;
-  const fixedHeader = <View style={[styles.header, { flexWrap: 'wrap', gap: 12 }]}>
+  const fixedHeader = <View style={[styles.header, { minHeight: compact ? 116 : 78, flexWrap: 'wrap', gap: compact ? 7 : 12, paddingTop: compact ? 6 : 0, paddingBottom: compact ? 8 : 0 }]}>
     {brand}
+    {compact && <View style={{ marginLeft: 'auto' }}>{registerButton}</View>}
     {wide && <View style={{ position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', pointerEvents: 'box-none' }}>{pinnedNav}</View>}
-    {!wide && pinnedNav}
-    <View style={{ marginLeft: 'auto' }}>{registerButton}</View>
+    {!wide && !compact && pinnedNav}
+    {compact && <View style={{ width: '100%', alignItems: 'center' }}>{pinnedNav}</View>}
+    {!compact && <View style={{ marginLeft: 'auto' }}>{registerButton}</View>}
   </View>;
 
   const paceOptions: { id: Pace; icon: string; title: string; time: string; description: string; steps: string }[] = [
@@ -795,9 +803,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </React.Fragment>)}</View>
   </View>;
   const home = <View style={[styles.content, { paddingTop: 10, gap: 0 }]}>
-    <View testID="scroll-reveal" style={{ minHeight: 590, justifyContent: 'center', alignItems: 'center', paddingVertical: 56, gap: 20 }}>
-      <View style={{ maxWidth: 780, alignItems: 'center', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8 }]}>CHOOSE YOUR PACE</Text><Text style={[styles.title, { fontSize: wide ? 48 : 36, lineHeight: wide ? 58 : 44, textAlign: 'center' }]}>What do you want to do?</Text><Text style={[styles.body, { fontSize: 16, lineHeight: 25, textAlign: 'center', maxWidth: 610 }]}>Choose a study pace below, then add your notes and practice questions to begin.</Text></View>
-      <View style={[styles.row, { width: '100%', maxWidth: 1000, marginTop: 16, justifyContent: 'center' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} testID="torch-block" style={[styles.card, { flex: 1, minWidth: 240, maxWidth: 320, minHeight: 255, gap: 13, borderColor: palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
+    <View testID="scroll-reveal" style={{ minHeight: compact ? undefined : 590, justifyContent: 'center', alignItems: 'center', paddingVertical: compact ? 38 : 56, gap: 20 }}>
+      <View style={{ width: '100%', maxWidth: 780, alignItems: 'center', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8, textAlign: 'center' }]}>CHOOSE YOUR PACE</Text><Text style={[styles.title, { fontSize: wide ? 48 : compact ? 30 : 36, lineHeight: wide ? 58 : compact ? 38 : 44, textAlign: 'center' }]}>What do you want to do?</Text><Text style={[styles.body, { fontSize: 16, lineHeight: 25, textAlign: 'center', maxWidth: 610 }]}>Choose a study pace below, then add your notes and practice questions to begin.</Text></View>
+      <View style={[styles.row, { width: '100%', maxWidth: 1000, marginTop: 16, justifyContent: compact || width <= 900 ? 'center' : 'flex-start' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 320, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ padding: 11 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open My materials'}</Text></Pressable></View>
       <Text style={[styles.small, { textAlign: 'center' }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions · ${linkedCount} source links to verify` : 'No notes or questions saved yet'}</Text>
     </View>
@@ -819,11 +827,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </View> : activeSubject ? <View style={{ gap: 16 }}>
       <Pressable onPress={() => { setFolderOpen(false); setConfirmClear(false); }} style={{ alignSelf: 'flex-start', paddingVertical: 5, paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>← All subject folders</Text></Pressable>
       <View style={styles.row}>
-        <View testID="torch-block" style={[styles.card, { flex: 1, minWidth: 290, gap: 12 }]}>
+        <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
           <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 02 · SOURCE NOTES & FILES</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>Subject notes</Text></View><ActionButton compact secondary label="Upload PDF / DOCX / PPTX" onPress={() => importFile('module')} /></View>
           <TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste notes for this subject…" placeholderTextColor="#9ba6ad" style={styles.input} />
         </View>
-        <View testID="torch-block" style={[styles.card, { flex: 1, minWidth: 290, gap: 12 }]}>
+        <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
           <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 03 · FORMATIVE QUESTIONS</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>What you were asked</Text></View><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View>
           <TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="One question per line…" placeholderTextColor="#9ba6ad" style={styles.input} />
         </View>
@@ -831,7 +839,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 04 · STUDY SCOPE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([...asStudySegments(notes), ...activeSubject.files.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(asStudySegments(notes), questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
         {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}><View style={{ flex: 1, minWidth: 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View><ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)}><Text style={{ color: palette.muted, fontWeight: '800', padding: 8 }}>Remove</Text></Pressable></View>
+          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9 }}><View style={{ flex: 1, minWidth: compact ? 0 : 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}><ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, minWidth: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: palette.muted, fontWeight: '800' }}>Remove</Text></Pressable></View></View>
           {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>EXTRACTED TEXT PREVIEW</Text>{fileSegments(file).slice(0, 5).map((segment, index) => <View key={`${segment.label}-${index}`} style={{ gap: 4 }}><Text style={{ color: '#b8e8c7', fontSize: 12, fontWeight: '800' }}>{segment.label}</Text><Text selectable numberOfLines={3} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{segment.text}</Text></View>)}<Text style={styles.small}>This file is selected as the current study source.</Text></View>}
         </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
       </View>
@@ -875,22 +883,22 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <StatusBar style="light" />
     <View style={styles.shell}>
       <View style={styles.main}>
-        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, backgroundColor: 'rgba(5,16,12,0.96)' }}><View style={styles.inner}>{fixedHeader}</View></View>
-        <ScrollView style={{ flex: 1, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, paddingTop: 78, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, backgroundColor: 'rgba(5,16,12,0.96)' }}><View style={[styles.inner, compact && { paddingHorizontal: 16 }]}>{fixedHeader}</View></View>
+        <ScrollView ref={scrollRef} style={{ flex: 1, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, paddingTop: compact ? 124 : 78, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
           <View testID="scroll-backdrop" pointerEvents="none" style={styles.scrollBackdrop}>
             <BlurTargetView ref={ambientRef} pointerEvents="none" style={styles.ambience}><View style={styles.glowA} /><View style={styles.glowB} /><View style={styles.glowC} /></BlurTargetView>
             <BlurView pointerEvents="none" blurTarget={ambientRef} intensity={62} tint="dark" blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : 'none'} style={styles.backgroundBlur} />
           </View>
-          {!!notice && <View style={styles.inner}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(143,203,166,0.28)', backgroundColor: 'rgba(24,70,44,0.72)' }}><Text style={[styles.small, { flex: 1, color: '#dcf5e5' }]}>{notice}</Text><Pressable accessibilityRole="button" onPress={() => setNotice('')}><Text style={{ color: '#b8e8c7', fontSize: 12, fontWeight: '800' }}>Dismiss</Text></Pressable></View></View>}
-          <View style={styles.inner}>{body}</View>
+          {!!notice && <View style={[styles.inner, compact && { paddingHorizontal: 16 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 10, padding: 12, marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(143,203,166,0.28)', backgroundColor: 'rgba(24,70,44,0.72)' }}><Text style={[styles.small, { flex: 1, color: '#dcf5e5' }]}>{notice}</Text><Pressable accessibilityRole="button" onPress={() => setNotice('')} style={{ minHeight: 40, justifyContent: 'center', alignSelf: compact ? 'flex-end' : 'auto' }}><Text style={{ color: '#b8e8c7', fontSize: 12, fontWeight: '800' }}>Dismiss</Text></Pressable></View></View>}
+          <View style={[styles.inner, compact && { paddingHorizontal: 16 }]}>{body}</View>
         </ScrollView>
       </View>
     </View>
     <Modal visible={!!sourceReader} transparent animationType="fade" onRequestClose={() => setSourceReader(null)}>
-      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-        <View style={[styles.card, { width: '100%', maxWidth: 820, maxHeight: '88%', gap: 14, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)' }]}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center', padding: compact ? 12 : 20 }}>
+        <View style={[styles.card, { width: '100%', maxWidth: 820, maxHeight: '88%', gap: 14, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)', padding: compact ? 16 : 22 }]}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-            <View style={{ flex: 1, gap: 5 }}><Text style={styles.label}>SOURCE READER</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800' }}>{sourceReader?.title}</Text><Text style={{ color: '#b8e8c7', fontSize: 13, fontWeight: '700' }}>{sourceReader?.location}</Text></View>
+            <View style={{ flex: 1, minWidth: 0, gap: 5 }}><Text style={styles.label}>SOURCE READER</Text><Text style={{ color: palette.ink, fontSize: compact ? 18 : 20, fontWeight: '800', flexShrink: 1 }}>{sourceReader?.title}</Text><Text style={{ color: '#b8e8c7', fontSize: 13, fontWeight: '700', flexShrink: 1 }}>{sourceReader?.location}</Text></View>
             <ActionButton compact secondary label="Close" onPress={() => setSourceReader(null)} />
           </View>
           <ScrollView style={{ flexShrink: 1 }}><Text selectable style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{sourceReader?.text}</Text></ScrollView>
