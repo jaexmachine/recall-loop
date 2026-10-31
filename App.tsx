@@ -116,7 +116,6 @@ const styles = StyleSheet.create({
   shell: { flex: 1, minHeight: 0, flexDirection: 'row' },
   sidebar: { width: 236, backgroundColor: 'rgba(5,17,12,0.76)', paddingHorizontal: 18, paddingTop: 26, paddingBottom: 22, justifyContent: 'space-between', borderRightWidth: 1, borderColor: 'rgba(255,255,255,0.10)' },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 38 },
-  brandMark: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#153b29', borderWidth: 1, borderColor: 'rgba(143,203,166,0.55)', alignItems: 'center', justifyContent: 'center' },
   navLabel: { color: '#91a1aa', fontSize: 11, fontWeight: '700', letterSpacing: 1.4, marginLeft: 12, marginBottom: 10, marginTop: 10 },
   navItem: { paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12, marginBottom: 4, flexDirection: 'row', gap: 11, alignItems: 'center' },
   main: { flex: 1, minHeight: 0, width: '100%' },
@@ -744,14 +743,10 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
 
-  const brand = <Pressable onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide ? 0 : 'auto', transform: [{ translateY: 22 }] }]}><View style={styles.brandMark}>
-      <View style={{ width: 18, height: 22, borderRadius: 4, backgroundColor: '#f4f3df', alignItems: 'center', paddingTop: 5, gap: 3 }}>
-        <View style={{ width: 11, height: 3, borderRadius: 2, backgroundColor: palette.yellow }} />
-        <View style={{ width: 11, height: 2, borderRadius: 2, backgroundColor: '#80ae8d' }} />
-        <View style={{ width: 8, height: 2, borderRadius: 2, backgroundColor: '#80ae8d', alignSelf: 'flex-start', marginLeft: 3 }} />
-      </View>
-      <Text style={{ position: 'absolute', right: 0, bottom: -1, color: '#94dfa9', fontSize: 16, lineHeight: 18, fontWeight: '900' }}>↶</Text>
-    </View><Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>Recall Loop</Text></Pressable>
+  const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide ? 0 : 'auto', transform: [{ translateY: 22 }] }]}>
+    <Text accessibilityElementsHidden style={{ color: '#94dfa9', fontSize: 36, lineHeight: 40, fontWeight: '800' }}>∞</Text>
+    <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>Recall L<Text style={{ color: palette.yellow }}>∞</Text>p</Text>
+  </Pressable>
   const registerButton = <Pressable accessibilityRole="button" style={{ paddingVertical: 10, paddingHorizontal: 20, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(210,235,227,0.20)', backgroundColor: 'rgba(5,16,12,0.94)', transform: [{ translateY: 22 }] }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
   const pinnedNav = <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
     {navItems.map((item) => <Pressable key={item.id} onPress={() => setPage(item.id)} style={{ paddingVertical: 9, paddingHorizontal: 11, borderRadius: 18, backgroundColor: page === item.id ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: page === item.id ? 'rgba(90,210,141,0.28)' : 'transparent' }}><Text style={{ color: page === item.id ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>)}
