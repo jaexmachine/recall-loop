@@ -145,33 +145,37 @@ function splitQuestions(raw: string) {
 }
 
 function draftPracticeQuestions(notes: string) {
-  const sentences = notes.split(/\n\s*\n/).slice(1).join(' ').match(/[^.!?]+[.!?]?/g) || [];
-  const drafts: string[] = [];
-  for (const raw of sentences) {
-    const sentence = raw.trim();
-    if (sentence.length < 35) continue;
+  const sentences = (notes.match(/[^.!?\n]+[.!?]?/g) || []).map((raw) => raw.trim()).filter((sentence) => sentence.length >= 35 && sentence.length <= 320 && terms(sentence).length >= 4);
+  const counts = new Map<string, number>();
+  sentences.forEach((sentence) => terms(sentence).forEach((term) => counts.set(term, (counts.get(term) || 0) + 1)));
+  const ranked = sentences.map((sentence) => {
+    const tokens = terms(sentence);
+    const signals = (sentence.match(/\b(?:is|are|means|refers to|because|therefore|causes|results in|leads to|increases|decreases|requires|consists of|first|second|finally)\b/gi) || []).length;
+    const numbers = (sentence.match(/\b\d+(?:\.\d+)?%?\b/g) || []).length;
+    const score = tokens.reduce((total, term) => total + 1 / (counts.get(term) || 1), 0) + signals * 1.8 + numbers * 1.5 + Math.min(sentence.length, 180) / 180;
     let question = '';
     if (/final electron acceptor/i.test(sentence)) question = /electron transport chain/i.test(sentence) ? 'What is the final electron acceptor in the electron transport chain?' : 'What is the final electron acceptor?';
     else {
       const location = sentence.match(/^(.+?)\s+(happens|occurs|takes place)\s+(in|at|within)\s+(.+?)[.!?]?$/i);
-      if (location) {
-        const [, subject, verb] = location;
-        const baseVerb = verb.toLowerCase() === 'happens' ? 'happen' : verb.toLowerCase() === 'occurs' ? 'occur' : 'take place';
-        question = `Where does ${subject.trim().toLowerCase()} ${baseVerb}?`;
-      } else if (/most of the (?:ATP|energy)/i.test(sentence)) question = 'Which stage produces most of the ATP during cellular respiration?';
-      else if (/net\s+(?:gain|yield)\s+of/i.test(sentence)) question = 'What is the net ATP yield described in this passage?';
+      const definition = sentence.match(/^(.{3,65}?)\s+(is|are|means|refers to|consists of)\s+(.+?)[.!?]?$/i);
+      const cause = sentence.match(/^(.{3,65}?)\s+(causes|results in|leads to|produces|increases|decreases)\s+(.+?)[.!?]?$/i);
+      const production = sentence.match(/^(.{3,65}?)\s+(?:releases?|produces?|makes?|generates?|requires?)\s+(.+?)[.!?]?$/i);
+      if (location) question = `Where does ${location[1].trim().toLowerCase()} ${location[2].toLowerCase() === 'happens' ? 'happen' : location[2].toLowerCase() === 'occurs' ? 'occur' : 'take place'}?`;
+      else if (definition) question = `${definition[2].toLowerCase() === 'are' ? 'What are' : 'What is'} ${definition[1].trim()}?`;
+      else if (cause) question = `What does ${cause[1].trim()} ${cause[2].toLowerCase() === 'causes' ? 'cause' : cause[2].toLowerCase() === 'results in' ? 'result in' : cause[2].toLowerCase() === 'leads to' ? 'lead to' : cause[2].toLowerCase()}?`;
+      else if (production) {
+        const verb = production[2].toLowerCase().replace(/s$/, '');
+        question = `What does ${production[1].trim()} ${verb}?`;
+      }
       else {
-        const releaseAndProduce = sentence.match(/^(.{3,45}?)\s+releases?\s+.+?\s+and\s+produces?\s+.+[.!?]?$/i);
-        if (releaseAndProduce) question = `What does ${releaseAndProduce[1].trim().toLowerCase()} release and produce?`;
-        else {
-          const production = sentence.match(/^(.{3,45}?)\s+(?:produces|produce|makes|make|generates|generate)\s+(.+?)[.!?]?$/i);
-          if (production) question = `What does ${production[1].trim().toLowerCase()} produce?`;
-        }
+        const focus = [...new Set(tokens)].sort((a, b) => (counts.get(a) || 0) - (counts.get(b) || 0) || b.length - a.length)[0];
+        if (focus) question = `Complete the key idea: ${sentence.replace(new RegExp(`\\b${focus}\\b`, 'i'), '_____')}`;
       }
     }
-    if (question && !drafts.includes(question)) drafts.push(question);
-    if (drafts.length >= 15) break;
-  }
+    return { question, score };
+  }).filter((item) => item.question);
+  const drafts: string[] = [];
+  ranked.sort((a, b) => b.score - a.score).forEach(({ question }) => { if (!drafts.includes(question) && drafts.length < 15) drafts.push(question); });
   return drafts;
 }
 
@@ -263,7 +267,18 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
   }
   if (extension === 'pptx') {
     const archive = await JSZip.loadAsync(data);
-    const slideNames = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort((a, b) => Number(a.match(/slide(\d+)/)?.[1]) - Number(b.match(/slide(\d+)/)?.[1]));
+    const slideFiles = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+    const presentationXml = await archive.file('ppt/presentation.xml')?.async('text');
+    const relationshipsXml = await archive.file('ppt/_rels/presentation.xml.rels')?.async('text');
+    let slideNames: string[] = [];
+    if (presentationXml && relationshipsXml) {
+      const presentation = new DOMParser().parseFromString(presentationXml, 'application/xml');
+      const relationships = new DOMParser().parseFromString(relationshipsXml, 'application/xml');
+      const targets = new Map([...relationships.getElementsByTagName('Relationship')].map((relationship) => [relationship.getAttribute('Id') || '', relationship.getAttribute('Target') || '']));
+      const orderedTargets = [...presentation.getElementsByTagName('p:sldId')].map((slide) => targets.get(slide.getAttribute('r:id') || slide.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || '')).filter(Boolean) as string[];
+      slideNames = orderedTargets.map((target) => new URL(target, 'https://recall-loop.local/ppt/presentation.xml').pathname.slice(1)).filter((path) => slideFiles.includes(path));
+    }
+    if (!slideNames.length) slideNames = slideFiles.sort((a, b) => Number(a.match(/slide(\d+)/)?.[1]) - Number(b.match(/slide(\d+)/)?.[1]));
     const slides: StudySegment[] = [];
     for (const [index, name] of slideNames.entries()) {
       const xml = await archive.file(name)?.async('text');
@@ -317,6 +332,7 @@ export default function App() {
   const [folderOpen, setFolderOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
+  const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
   const [sourceReader, setSourceReader] = useState<SourceReader | null>(null);
   const [sourceScope, setSourceScope] = useState<'subject' | 'file' | 'notes'>('subject');
   const [newSubjectName, setNewSubjectName] = useState('');
@@ -437,6 +453,34 @@ export default function App() {
   const activeSubject = subjects.find((subject) => subject.id === activeSubjectId) || null;
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
   const fileSegments = (file: StudyFile) => (file.segments?.length ? file.segments : asStudySegments(file.text, file.name)).map((segment) => ({ ...segment, sourceFileId: file.id }));
+  const lecturePreview = (file: StudyFile) => {
+    const slides = fileSegments(file);
+    const slideIndex = Math.min(previewSlideIndex, Math.max(0, slides.length - 1));
+    const slide = slides[slideIndex];
+    if (!slide) return null;
+    const linkedQuestions = questionList.map((question) => ({ question, match: buildMatches([slide], [question])[0] })).filter(({ match }) => match.overlap > 0).sort((a, b) => b.match.overlap - a.match.overlap);
+    const slideSuggestion = draftPracticeQuestions(slide.text)[0];
+    const highlightBasis = linkedQuestions[0]?.question || slideSuggestion || '';
+    const slideTerms = new Set(terms(slide.text));
+    const focusedTerms = terms(highlightBasis).filter((term) => slideTerms.has(term)).sort((a, b) => b.length - a.length).slice(0, 3);
+    const highlightQuestion = focusedTerms.length ? focusedTerms.join(' ') : highlightBasis;
+    const addSuggestedQuestion = () => {
+      if (!slideSuggestion || questionList.includes(slideSuggestion)) return;
+      const updatedQuestions = [...questionList, slideSuggestion];
+      setQuestionsText(updatedQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+      setMatches(buildMatches(studySourceSegments, updatedQuestions));
+      notify('Slide question added to your study set. Review its source match below.');
+    };
+    return <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.28)', padding: 14, backgroundColor: 'rgba(5,14,11,0.52)', gap: 12 }}>
+      <View style={{ flexDirection: compact ? 'column' : 'row', justifyContent: 'space-between', alignItems: compact ? 'stretch' : 'center', gap: 9 }}>
+        <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>{/\.pptx$/i.test(file.name) ? 'SLIDE PREVIEW' : 'SOURCE SECTION PREVIEW'} · LOCAL ANALYSIS</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 16, marginTop: 4 }}>{/\.pptx$/i.test(file.name) ? `Slide ${slideIndex + 1} of ${slides.length}` : `${slide.label.split(' · ').slice(-1)[0]} · ${slideIndex + 1} of ${slides.length}`}</Text></View>
+        <View style={{ flexDirection: 'row', gap: 7 }}><ActionButton compact secondary label="← Previous" onPress={() => setPreviewSlideIndex((index) => Math.max(0, index - 1))} /><ActionButton compact secondary label="Next →" onPress={() => setPreviewSlideIndex((index) => Math.min(slides.length - 1, index + 1))} /></View>
+      </View>
+      <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, backgroundColor: 'rgba(245,216,94,0.07)', padding: 12, borderRadius: 8 }}><Text style={styles.label}>IMPORTANT TEXT · HIGHLIGHTED AGAINST {linkedQuestions.length ? 'YOUR QUESTIONS' : 'A DRAFT RECALL PROMPT'}</Text><View style={{ marginTop: 7 }}>{highlightedPassage(slide.text, highlightQuestion)}</View></View>
+      <View style={{ gap: 7 }}><Text style={styles.label}>QUESTION CONNECTIONS</Text>{linkedQuestions.length ? linkedQuestions.slice(0, 3).map(({ question, match }, index) => <View key={`${question}-${index}`} style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(33,129,91,0.14)', borderWidth: 1, borderColor: 'rgba(90,210,141,0.22)' }}><Text style={{ color: '#dff8e7', fontSize: 13, fontWeight: '700' }}>{question}</Text><Text style={[styles.small, { marginTop: 3 }]}>{match.overlap} shared key terms · check this slide when answering</Text></View>) : <Text style={styles.body}>No saved question matches this slide yet. The highlight uses a draft recall prompt generated from its text.</Text>}</View>
+      {slideSuggestion && <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><Text style={[styles.body, { flex: 1, color: '#dfe9e3' }]}>Draft: {slideSuggestion}</Text><ActionButton compact secondary label={questionList.includes(slideSuggestion) ? 'Already added' : 'Add question'} onPress={addSuggestedQuestion} /></View>}
+    </View>;
+  };
   const studySourceText = sourceScope === 'file' && selectedSource ? selectedSource.text : sourceScope === 'notes' ? notes : [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.text) || [])].filter(Boolean).join('\n\n');
   const studySourceSegments = sourceScope === 'file' && selectedSource
     ? fileSegments(selectedSource)
@@ -446,6 +490,12 @@ export default function App() {
   const questionList = useMemo(() => splitQuestions(questionsText), [questionsText]);
   const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
   const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0;
+  const nextStudyMatch = matches.find((match) => history.some((attempt) => attempt.question === match.question && (attempt.outcome === 'missed' || attempt.outcome === 'needs-review')))
+    || matches.filter((match) => match.overlap > 0).sort((a, b) => b.overlap - a.overlap)[0]
+    || matches[0];
+  const nextStudyReason = nextStudyMatch && history.some((attempt) => attempt.question === nextStudyMatch.question && (attempt.outcome === 'missed' || attempt.outcome === 'needs-review'))
+    ? 'You marked this question for another review.'
+    : nextStudyMatch?.overlap ? 'This question has the clearest evidence link in your source.' : 'This question needs a source link checked before you rely on it.';
   const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : (questionList[questionIndex] || 'What is the main idea of this module?');
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
   const correctAnswer = currentDemoQuiz.correct;
@@ -667,6 +717,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       return;
     }
     setSourceToFile(file);
+    setPreviewSlideIndex(0);
     setPreviewSourceId((previous) => previous === file.id ? null : file.id);
   };
 
@@ -704,8 +755,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
   };
 
-  const startStudy = (pace: Pace = mode) => {
-    setMode(pace); setSelectedPace(pace); setQuestionIndex(0); setPhase(pace === 'deep' ? 'module' : 'diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('study');
+  const startStudy = (pace: Pace = mode, firstQuestionIndex = 0) => {
+    setMode(pace); setSelectedPace(pace); setQuestionIndex(Math.max(0, firstQuestionIndex)); setPhase(pace === 'deep' ? 'module' : 'diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('study');
   };
 
   const submitAnswer = (value: number) => {
@@ -840,14 +891,15 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 04 · STUDY SCOPE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([...asStudySegments(notes), ...activeSubject.files.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(asStudySegments(notes), questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
         {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
           <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9 }}><View style={{ flex: 1, minWidth: compact ? 0 : 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}><ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, minWidth: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: palette.muted, fontWeight: '800' }}>Remove</Text></Pressable></View></View>
-          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>EXTRACTED TEXT PREVIEW</Text>{fileSegments(file).slice(0, 5).map((segment, index) => <View key={`${segment.label}-${index}`} style={{ gap: 4 }}><Text style={{ color: '#b8e8c7', fontSize: 12, fontWeight: '800' }}>{segment.label}</Text><Text selectable numberOfLines={3} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{segment.text}</Text></View>)}<Text style={styles.small}>This file is selected as the current study source.</Text></View>}
+          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>EXTRACTED LECTURE CONTENT</Text>{lecturePreview(file)}<Text style={styles.small}>Text was extracted in this browser. Slide boundaries are preserved for PPTX; page boundaries are preserved for text-based PDFs.</Text></View>}
         </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
       </View>
       <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><ActionButton label={busy ? 'Reading file…' : 'STEP 05 · Match questions to source'} onPress={matchQuestions} /><ActionButton label="Draft questions from source" secondary onPress={generateQuestions} /><ActionButton label="Clear workspace" secondary onPress={() => setConfirmClear(true)} /></View>
       {confirmClear && <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: 'rgba(245,216,94,0.4)', borderRadius: 13, padding: 13, backgroundColor: 'rgba(245,216,94,0.06)' }}><Text style={[styles.body, { flex: 1, minWidth: 220, color: '#fff2ad' }]}>Are you sure? This deletes all subject folders, uploaded text, questions, and progress saved in this browser.</Text><ActionButton compact secondary label="Cancel" onPress={() => setConfirmClear(false)} /><ActionButton compact label="Yes, clear everything" onPress={() => { clearWorkspace(); setConfirmClear(false); }} /></View>}
-      <Text style={styles.small}>PDF, DOCX, PPTX, TXT, and Markdown text is extracted locally in your browser. Scanned PDFs need OCR. Matching and question drafts use transparent local rules, not a connected AI service.</Text>
+      <Text style={styles.small}>Prototype analysis runs locally in your browser: it ranks source sentences, drafts recall prompts, and links questions to matching passages. It is not a connected AI model yet. Scanned PDFs need OCR.</Text>
       <View testID="torch-block" style={[styles.card, { gap: 14 }]}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 06 · MATCH AND VERIFY</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 5 }}>Check the evidence before studying</Text></View><View style={{ backgroundColor: palette.yellowSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}><Text style={{ color: '#705d00', fontSize: 11, fontWeight: '800' }}>KEYWORD BASELINE</Text></View></View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 06 · QUESTION ANALYZER PROTOTYPE</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 5 }}>What should you study next?</Text></View><View style={{ backgroundColor: palette.yellowSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}><Text style={{ color: '#705d00', fontSize: 11, fontWeight: '800' }}>LOCAL ANALYSIS</Text></View></View>
+        {nextStudyMatch && <View style={{ borderWidth: 1, borderColor: 'rgba(90,210,141,0.28)', backgroundColor: 'rgba(33,129,91,0.13)', borderRadius: 12, padding: 13, gap: 8 }}><Text style={styles.label}>RECOMMENDED NEXT QUESTION</Text><Text style={{ color: palette.ink, fontSize: 16, lineHeight: 23, fontWeight: '800' }}>{nextStudyMatch.question}</Text><Text style={styles.small}>{nextStudyReason}</Text>{questionList.includes(nextStudyMatch.question) && <ActionButton label="Start with this question →" onPress={() => startStudy(selectedPace, questionList.indexOf(nextStudyMatch.question))} />}</View>}
         {matches.map((match, i) => <View key={`${i}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 7 }}><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 14 }}>Q{i + 1}. {match.question}</Text><View style={{ backgroundColor: match.overlap ? 'rgba(245,216,94,0.10)' : 'rgba(255,255,255,0.04)', borderLeftWidth: match.overlap ? 3 : 1, borderLeftColor: match.overlap ? 'rgba(245,216,94,0.76)' : palette.line, borderRadius: 9, padding: 11 }}><Text style={{ color: palette.ink, fontSize: 13, lineHeight: 19 }}>{match.passage}</Text></View><Text style={styles.small}>{match.sourceLabel ? `${match.sourceLabel} · ` : ''}{match.manual ? (match.passageIndex ? 'Manual source · verify this passage' : 'Source link cleared · choose a passage or review manually') : match.overlap ? `Suggested source · ${match.overlap} shared key term${match.overlap === 1 ? '' : 's'} · please verify` : 'No automatic link · manual review needed'}</Text>{findMatchSourceFile(match) && <ActionButton compact secondary label="Open source location →" onPress={() => void openSourceLocation(match)} />}{sourceOptions.length > 0 && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary label="Previous source" onPress={() => stepMatchSource(match.question, -1)} /><ActionButton compact secondary label="Next source" onPress={() => stepMatchSource(match.question, 1)} />{match.passageIndex !== null && <ActionButton compact secondary label="Clear link" onPress={() => clearMatchSource(match.question)} />}</View>}</View>)}
         {!matches.length && <Text style={styles.body}>Add a few questions, then match them to see suggested passages.</Text>}
       </View>
