@@ -27,20 +27,21 @@ Vercel gives the site a shareable `*.vercel.app` address. Each push to `main` tr
 
 - Cram, Steady, and Deep study paths.
 - Subject folders with pasted notes, formative questions, and uploaded source files.
-- Source upload for PDF, DOCX, PPTX, TXT, and Markdown files, extracted in the browser.
+- Source upload for PDF, DOCX, PPT, PPTX, TXT, and Markdown files, extracted in the browser.
+- Original PDF pages and PowerPoint slides render in the materials preview, with question-linked words highlighted in high-contrast yellow.
 - Choose one source file, just pasted notes, or all source material in a subject as the study baseline.
 - Transparent keyword matching from questions to source paragraphs.
 - Review suggested links, move them to another paragraph, or clear them.
 - Start with retrieval, open a linked source after a miss, then retry.
 - Recent attempts and progress metrics saved in browser local storage.
-- Original uploads kept in browser IndexedDB so source links can reopen PDFs at their page and show extracted passages for DOCX/PPTX/text files.
+- Original uploads kept in browser IndexedDB so source links can reopen the matching PDF page or PowerPoint slide and show extracted passages for DOCX/text files.
 - Private ZIP backup and restore for folders, notes, questions, progress, and originals.
 - Clear workspace confirmation before deleting saved folders and progress.
 - Responsive web interface with reduced-motion-aware visual effects.
 
 ## Limits of this release
 
-- Text extraction runs locally in the browser; study files are not uploaded to the hosting provider. Scanned PDFs that contain only images need OCR and cannot be read yet.
+- Rendering and text extraction run locally in the browser; study files are not uploaded to the hosting provider. Scanned PDFs can be previewed, but need OCR before their text can be matched to questions. Complex PowerPoint features may render with minor differences from Microsoft Office.
 - Large extracted files are limited to keep browser storage usable. Files over 20 MB or extracted text over the browser workspace limit are rejected.
 - Matching and practice-question drafting use local heuristics, not an AI model. Suggested links must be verified, and custom answers are not automatically graded.
 - Materials and progress are stored separately in each browser profile. There is no account or automatic cloud sync yet.

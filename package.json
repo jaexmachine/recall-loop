@@ -4,6 +4,7 @@
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~58.0.15",
+    "@web-ppt/core": "^0.6.0",
     "expo": "~58.0.21",
     "expo-blur": "~58.0.5",
     "expo-status-bar": "~58.0.4",

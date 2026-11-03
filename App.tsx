@@ -17,6 +17,7 @@ import Svg, { Path } from 'react-native-svg';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { parse as parsePowerPoint, renderSlideToSvg, slideText } from '@web-ppt/core';
 
 type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; sourceLabel?: string; sourceFileId?: string; manual?: boolean };
 type StudyAttempt = { id: string; question: string; mode: Pace; outcome: 'correct' | 'missed' | 'self-rated-ready' | 'needs-review'; createdAt: string };
@@ -265,6 +266,14 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
     const result = await mammoth.extractRawText({ arrayBuffer: data });
     return result.value.split(/\n\s*\n/).map((text, index) => ({ label: `${file.name} · paragraph ${index + 1}`, text: text.trim() })).filter((segment) => segment.text);
   }
+  if (extension === 'ppt') {
+    const presentation = await parsePowerPoint(data);
+    try {
+      return presentation.slides.map((slide, index) => ({ label: `${file.name} · slide ${index + 1}`, text: slideText(slide).trim() }));
+    } finally {
+      presentation.dispose?.();
+    }
+  }
   if (extension === 'pptx') {
     const archive = await JSZip.loadAsync(data);
     const slideFiles = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
@@ -285,7 +294,7 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
       if (!xml) continue;
       const document = new DOMParser().parseFromString(xml, 'application/xml');
       const paragraphs = [...document.getElementsByTagName('a:p')].map((paragraph) => [...paragraph.getElementsByTagName('a:t')].map((node) => node.textContent || '').join('').trim()).filter(Boolean);
-      if (paragraphs.length) slides.push({ label: `${file.name} · slide ${index + 1}`, text: paragraphs.join('\n\n') });
+      slides.push({ label: `${file.name} · slide ${index + 1}`, text: paragraphs.join('\n\n') });
     }
     return slides;
   }
@@ -311,11 +320,194 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
     }
     return pages;
   }
-  throw new Error('Choose a PDF, DOCX, PPTX, TXT, or Markdown file.');
+  throw new Error('Choose a PDF, DOCX, PPT, PPTX, TXT, or Markdown file.');
 }
 
 function ActionButton({ label, onPress, secondary = false, compact = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean }) {
   return <Pressable accessibilityRole="button" onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
+}
+
+function appendTermHighlights(root: Element, highlightTerms: string[], htmlText: boolean) {
+  const usableTerms = [...new Set(highlightTerms.map((term) => term.trim()).filter((term) => term.length > 2))].sort((a, b) => b.length - a.length);
+  if (!usableTerms.length) return;
+  const escapedTerms = usableTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`\\b(${escapedTerms.join('|')})\\b`, 'gi');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes: Node[] = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Node);
+  textNodes.forEach((textNode) => {
+    const value = textNode.nodeValue || '';
+    pattern.lastIndex = 0;
+    if (!pattern.test(value)) return;
+    pattern.lastIndex = 0;
+    const owner = textNode.ownerDocument || document;
+    const fragment = owner.createDocumentFragment();
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(value))) {
+      if (match.index > cursor) fragment.appendChild(owner.createTextNode(value.slice(cursor, match.index)));
+      const highlighted = owner.createElementNS(htmlText ? 'http://www.w3.org/1999/xhtml' : 'http://www.w3.org/2000/svg', htmlText ? 'span' : 'tspan');
+      highlighted.textContent = match[0];
+      highlighted.setAttribute('style', htmlText
+        ? 'background-color:#f5d85e;color:#193326;font-weight:800;border-radius:2px;box-shadow:0 0 0 1px #f5d85e;'
+        : 'fill:#f5d85e;stroke:#193326;stroke-width:0.7px;paint-order:stroke;');
+      highlighted.setAttribute('data-recall-highlight', 'true');
+      fragment.appendChild(highlighted);
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < value.length) fragment.appendChild(owner.createTextNode(value.slice(cursor)));
+    textNode.parentNode?.replaceChild(fragment, textNode);
+  });
+}
+
+function highlightPresentationSvg(svg: SVGSVGElement, highlightTerms: string[]) {
+  svg.querySelectorAll('script,iframe,object,embed').forEach((node) => node.remove());
+  svg.querySelectorAll('style').forEach((style) => {
+    if (/@import|url\(\s*['"]?(?:https?:|\/\/)/i.test(style.textContent || '')) style.remove();
+  });
+  svg.querySelectorAll('*').forEach((element) => {
+    [...element.attributes].forEach((attribute) => {
+      if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+      if (/^(?:href|xlink:href)$/i.test(attribute.name) && attribute.value && !/^(?:#|data:image\/|blob:)/i.test(attribute.value)) element.removeAttribute(attribute.name);
+      if (attribute.name.toLowerCase() === 'style' && /url\(\s*['"]?(?:https?:|\/\/)/i.test(attribute.value)) element.removeAttribute(attribute.name);
+    });
+  });
+  svg.querySelectorAll('foreignObject').forEach((foreignObject) => appendTermHighlights(foreignObject, highlightTerms, true));
+  const vectorText = [...svg.querySelectorAll('text')].filter((node) => !node.closest('foreignObject'));
+  vectorText.forEach((node) => appendTermHighlights(node, highlightTerms, false));
+}
+
+function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fallbackText }: { fileId: string; fileName: string; pageIndex: number; highlightTerms: string[]; fallbackText: string }) {
+  const hostRef = useRef<React.ComponentRef<typeof View> | null>(null);
+  const [error, setError] = useState('');
+  const normalizedTerms = highlightTerms.join('|');
+
+  useEffect(() => {
+    const host = hostRef.current as unknown as HTMLDivElement | null;
+    if (!host) return;
+    if (Platform.OS !== 'web') { host.style.display = 'none'; setError('Original page preview is available in the browser.'); return; }
+    let cancelled = false;
+    let disposePresentation: (() => void) | undefined;
+    let activePdfTask: { cancel: () => void } | null = null;
+    let activePdfDocument: any = null;
+    let activeTextLayer: InstanceType<typeof pdfjs.TextLayer> | null = null;
+    let pdfObserver: ResizeObserver | null = null;
+    let pdfResizeListener: (() => void) | null = null;
+    let renderGeneration = 0;
+    const termsForPage = normalizedTerms ? normalizedTerms.split('|').filter(Boolean) : [];
+    setError('');
+    host.replaceChildren();
+    host.style.position = 'relative';
+    host.style.width = '100%';
+    host.style.minHeight = '180px';
+    host.style.overflow = 'hidden';
+    host.style.background = '#fff';
+    host.style.display = 'block';
+    const showError = (message: string) => { host.style.display = 'none'; setError(message); };
+
+    const render = async () => {
+      try {
+        const original = await getOriginalDocument(fileId);
+        if (!original) throw new Error('The original file is no longer available in this browser.');
+        const extension = fileName.split('.').pop()?.toLowerCase();
+        if (extension === 'pptx' || extension === 'ppt') {
+          const presentation = await parsePowerPoint(original.blob);
+          disposePresentation = () => presentation.dispose?.();
+          if (cancelled) { disposePresentation(); return; }
+          const slide = presentation.slides[pageIndex];
+          if (!slide) throw new Error('This slide could not be opened.');
+          if (cancelled) return;
+          const parsed = new DOMParser().parseFromString(renderSlideToSvg(presentation, slide), 'image/svg+xml');
+          if (parsed.querySelector('parsererror')) throw new Error('This slide could not be rendered.');
+          const svg = parsed.documentElement as unknown as SVGSVGElement;
+          highlightPresentationSvg(svg, termsForPage);
+          svg.setAttribute('width', '100%');
+          svg.setAttribute('height', '100%');
+          svg.style.display = 'block';
+          svg.style.width = '100%';
+          svg.style.height = 'auto';
+          svg.style.background = '#ffffff';
+          host.style.aspectRatio = `${presentation.width} / ${presentation.height}`;
+          host.style.height = 'auto';
+          host.replaceChildren(document.importNode(svg, true));
+          setError('');
+          return;
+        }
+        if (extension !== 'pdf') throw new Error('A rendered page preview is available for PDF and PowerPoint files.');
+        const bytes = new Uint8Array(await original.blob.arrayBuffer());
+        if (typeof window !== 'undefined') {
+          const basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname.slice(0, window.location.pathname.lastIndexOf('/') + 1);
+          pdfjs.GlobalWorkerOptions.workerSrc = new URL(`${basePath}pdf.worker.min.mjs`, window.location.origin).toString();
+        }
+        const pdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+        activePdfDocument = pdf;
+        if (cancelled) return;
+        const page = await pdf.getPage(pageIndex + 1);
+        const baseViewport = page.getViewport({ scale: 1 });
+        host.style.aspectRatio = `${baseViewport.width} / ${baseViewport.height}`;
+        host.style.height = 'auto';
+        const layerStyle = document.createElement('style');
+        layerStyle.textContent = `.recall-pdf-text-layer{position:absolute;inset:0;overflow:hidden;line-height:1;z-index:1;transform-origin:0 0;user-select:text}.recall-pdf-text-layer>:is(span,br),.recall-pdf-text-layer .markedContent>span:not([data-recall-highlight]){position:absolute;color:transparent;white-space:pre;transform-origin:0 0;cursor:text}`;
+        host.appendChild(layerStyle);
+        const drawPage = async () => {
+          const generation = ++renderGeneration;
+          activePdfTask?.cancel();
+          activeTextLayer?.cancel();
+          const availableWidth = host.clientWidth;
+          if (availableWidth < 20) return;
+          const scale = Math.min(availableWidth / baseViewport.width, 1.75);
+          const viewport = page.getViewport({ scale });
+          const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.ceil(viewport.width * pixelRatio);
+          canvas.height = Math.ceil(viewport.height * pixelRatio);
+          canvas.style.cssText = `position:absolute;inset:0;width:${viewport.width}px;height:${viewport.height}px;display:block;`;
+          const textContainer = document.createElement('div');
+          textContainer.className = 'recall-pdf-text-layer';
+          textContainer.style.width = `${viewport.width}px`;
+          textContainer.style.height = `${viewport.height}px`;
+          host.style.height = `${viewport.height}px`;
+          host.replaceChildren(layerStyle, canvas, textContainer);
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('This browser could not draw the PDF page.');
+          activePdfTask = page.render({ canvasContext: context, viewport, transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0] });
+          try {
+            await (activePdfTask as any).promise;
+            if (cancelled || generation !== renderGeneration) return;
+            const textLayer = new pdfjs.TextLayer({ textContentSource: await page.getTextContent(), container: textContainer, viewport });
+            activeTextLayer = textLayer;
+            await textLayer.render();
+            if (cancelled || generation !== renderGeneration) return;
+            appendTermHighlights(textContainer, termsForPage, true);
+            setError('');
+          } catch (renderError) {
+            if (renderGeneration === generation && !cancelled && !(renderError instanceof Error && renderError.name === 'RenderingCancelledException')) throw renderError;
+          }
+        };
+        pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => { void drawPage().catch((drawError) => { if (!cancelled) showError(drawError instanceof Error ? drawError.message : 'Could not render this page.'); }); }) : null;
+        pdfObserver?.observe(host);
+        pdfResizeListener = () => { void drawPage().catch((drawError) => { if (!cancelled) showError(drawError instanceof Error ? drawError.message : 'Could not render this page.'); }); };
+        if (!pdfObserver) window.addEventListener('resize', pdfResizeListener);
+        await drawPage();
+      } catch (renderError) {
+        if (!cancelled) showError(renderError instanceof Error ? renderError.message : 'Could not render this page.');
+      }
+    };
+    void render();
+    return () => {
+      cancelled = true;
+      renderGeneration += 1;
+      activePdfTask?.cancel();
+      activeTextLayer?.cancel();
+      void activePdfDocument?.destroy().catch(() => undefined);
+      pdfObserver?.disconnect();
+      if (pdfResizeListener) window.removeEventListener('resize', pdfResizeListener);
+      disposePresentation?.();
+      host.replaceChildren();
+    };
+  }, [fileId, fileName, pageIndex, normalizedTerms]);
+
+  return <View style={{ gap: 8 }}><View ref={hostRef} accessibilityLabel={`Original page preview for ${fileName}, page ${pageIndex + 1}`} style={{ width: '100%', aspectRatio: 1.45, minHeight: 180, borderWidth: 1, borderColor: 'rgba(20,50,35,0.24)', borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff' }} />{!!error && <View style={{ gap: 7 }}><Text style={{ color: '#ffe9a0', fontSize: 12, lineHeight: 18 }}>{error} Showing the extracted text below instead.</Text><Text style={{ color: '#20372c', fontSize: 14, lineHeight: 21, backgroundColor: '#fffdf3', padding: 12, borderRadius: 8 }}>{fallbackText || 'No selectable text was found on this page. You can still view the original page above.'}</Text></View>}</View>;
 }
 
 export default function App() {
@@ -460,10 +652,11 @@ export default function App() {
     if (!slide) return null;
     const linkedQuestions = questionList.map((question) => ({ question, match: buildMatches([slide], [question])[0] })).filter(({ match }) => match.overlap > 0).sort((a, b) => b.match.overlap - a.match.overlap);
     const slideSuggestion = draftPracticeQuestions(slide.text)[0];
-    const highlightBasis = linkedQuestions[0]?.question || slideSuggestion || '';
+    const highlightBasis = linkedQuestions[0]?.question || questionList[0] || slideSuggestion || '';
     const slideTerms = new Set(terms(slide.text));
     const focusedTerms = terms(highlightBasis).filter((term) => slideTerms.has(term)).sort((a, b) => b.length - a.length).slice(0, 3);
-    const highlightQuestion = focusedTerms.length ? focusedTerms.join(' ') : highlightBasis;
+    const originalPageNumber = Number(slide.label.match(/\bslide\s+(\d+)/i)?.[1] || slide.label.match(/\bpage\s+(\d+)/i)?.[1]);
+    const renderedPageIndex = Number.isFinite(originalPageNumber) && originalPageNumber > 0 ? originalPageNumber - 1 : slideIndex;
     const addSuggestedQuestion = () => {
       if (!slideSuggestion || questionList.includes(slideSuggestion)) return;
       const updatedQuestions = [...questionList, slideSuggestion];
@@ -473,10 +666,12 @@ export default function App() {
     };
     return <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.28)', padding: 14, backgroundColor: 'rgba(5,14,11,0.52)', gap: 12 }}>
       <View style={{ flexDirection: compact ? 'column' : 'row', justifyContent: 'space-between', alignItems: compact ? 'stretch' : 'center', gap: 9 }}>
-        <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>{/\.pptx$/i.test(file.name) ? 'SLIDE PREVIEW' : 'SOURCE SECTION PREVIEW'} · LOCAL ANALYSIS</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 16, marginTop: 4 }}>{/\.pptx$/i.test(file.name) ? `Slide ${slideIndex + 1} of ${slides.length}` : `${slide.label.split(' · ').slice(-1)[0]} · ${slideIndex + 1} of ${slides.length}`}</Text></View>
+        <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>{/\.pptx?$/i.test(file.name) ? 'SLIDE PREVIEW' : 'PDF PAGE PREVIEW'} · ORIGINAL LAYOUT</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 16, marginTop: 4 }}>{/\.pptx?$/i.test(file.name) ? `Slide ${originalPageNumber || slideIndex + 1} of ${slides.length}` : `${slide.label.split(' · ').slice(-1)[0]} · ${slideIndex + 1} of ${slides.length}`}</Text></View>
         <View style={{ flexDirection: 'row', gap: 7 }}><ActionButton compact secondary label="← Previous" onPress={() => setPreviewSlideIndex((index) => Math.max(0, index - 1))} /><ActionButton compact secondary label="Next →" onPress={() => setPreviewSlideIndex((index) => Math.min(slides.length - 1, index + 1))} /></View>
       </View>
-      <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, backgroundColor: 'rgba(245,216,94,0.07)', padding: 12, borderRadius: 8 }}><Text style={styles.label}>IMPORTANT TEXT · HIGHLIGHTED AGAINST {linkedQuestions.length ? 'YOUR QUESTIONS' : 'A DRAFT RECALL PROMPT'}</Text><View style={{ marginTop: 7 }}>{highlightedPassage(slide.text, highlightQuestion)}</View></View>
+      <RenderedPagePreview fileId={file.id} fileName={file.name} pageIndex={renderedPageIndex} highlightTerms={focusedTerms} fallbackText={slide.text ? `${slide.label}\n${slide.text}` : ''} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><View style={{ backgroundColor: palette.yellow, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 4 }}><Text style={{ color: '#193326', fontSize: 11, fontWeight: '900' }}>HIGHLIGHTED</Text></View><Text style={styles.small}>{focusedTerms.length ? `Words linked to ${linkedQuestions[0]?.question || 'your first question'}.` : 'No matching words to highlight on this page yet.'}</Text></View>
+      {!!slide.text && <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, backgroundColor: 'rgba(245,216,94,0.07)', padding: 12, borderRadius: 8 }}><Text style={styles.label}>EXTRACTED TEXT · {linkedQuestions.length ? 'QUESTION MATCH' : 'PAGE CONTENT'}</Text><View style={{ marginTop: 7 }}>{highlightedPassage(slide.text, highlightBasis)}</View></View>}
       <View style={{ gap: 7 }}><Text style={styles.label}>QUESTION CONNECTIONS</Text>{linkedQuestions.length ? linkedQuestions.slice(0, 3).map(({ question, match }, index) => <View key={`${question}-${index}`} style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(33,129,91,0.14)', borderWidth: 1, borderColor: 'rgba(90,210,141,0.22)' }}><Text style={{ color: '#dff8e7', fontSize: 13, fontWeight: '700' }}>{question}</Text><Text style={[styles.small, { marginTop: 3 }]}>{match.overlap} shared key terms · check this slide when answering</Text></View>) : <Text style={styles.body}>No saved question matches this slide yet. The highlight uses a draft recall prompt generated from its text.</Text>}</View>
       {slideSuggestion && <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><Text style={[styles.body, { flex: 1, color: '#dfe9e3' }]}>Draft: {slideSuggestion}</Text><ActionButton compact secondary label={questionList.includes(slideSuggestion) ? 'Already added' : 'Add question'} onPress={addSuggestedQuestion} /></View>}
     </View>;
@@ -565,7 +760,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         return;
       }
       const picker = document.createElement('input');
-      picker.type = 'file'; picker.accept = '.pdf,.docx,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
+      picker.type = 'file'; picker.accept = '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
       const file = await new Promise<File | null>((resolve) => {
         picker.onchange = () => resolve(picker.files?.[0] || null);
         picker.click();
@@ -575,7 +770,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const extracted = (await extractDocumentText(file)).map((segment) => ({ ...segment, sourceFileId: fileId }));
       const content = extracted.map((segment) => segment.text).join('\n\n').trim();
-      if (!content) throw new Error('No selectable text was found. Scanned PDFs need OCR before they can be used.');
+      const canStudyVisually = kind === 'module' && /\.(?:pdf|pptx?)$/i.test(file.name);
+      if (!content && !canStudyVisually) throw new Error('No selectable text was found. Scanned PDFs can still be previewed, but need OCR before automatic question matching.');
       const savedCharacters = subjects.reduce((total, subject) => total + subject.notes.length + subject.questionsText.length + subject.files.reduce((sum, savedFile) => sum + savedFile.text.length, 0), 0) + notes.length + questionsText.length;
       if (content.length > 350_000 || savedCharacters + content.length > 450_000) throw new Error('This file has too much extracted text for browser storage. Split it into shorter files or remove older files first.');
       const added: StudyFile = { id: fileId, name: file.name, text: content, segments: extracted, role: kind === 'module' ? 'source' : 'questions' };
@@ -588,7 +784,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         setMatches(buildMatches(extracted, questionList));
       } else setQuestionsText(content);
       setDemoMaterial(false);
-      notify(`${file.name} was added to ${activeSubject.name}. The text was extracted in this browser.`);
+      notify(content ? `${file.name} was added to ${activeSubject.name}. The text was extracted in this browser.` : `${file.name} was added to ${activeSubject.name}. Its pages are ready to preview; OCR is needed for text matching.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not read that file. Try pasting the text instead.');
     } finally {
@@ -879,7 +1075,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       <Pressable onPress={() => { setFolderOpen(false); setConfirmClear(false); }} style={{ alignSelf: 'flex-start', paddingVertical: 5, paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>← All subject folders</Text></Pressable>
       <View style={styles.row}>
         <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
-          <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 02 · SOURCE NOTES & FILES</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>Subject notes</Text></View><ActionButton compact secondary label="Upload PDF / DOCX / PPTX" onPress={() => importFile('module')} /></View>
+          <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 02 · SOURCE NOTES & FILES</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>Subject notes</Text></View><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View>
           <TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste notes for this subject…" placeholderTextColor="#9ba6ad" style={styles.input} />
         </View>
         <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
@@ -891,7 +1087,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 04 · STUDY SCOPE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([...asStudySegments(notes), ...activeSubject.files.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(asStudySegments(notes), questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
         {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
           <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9 }}><View style={{ flex: 1, minWidth: compact ? 0 : 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}><ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, minWidth: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: palette.muted, fontWeight: '800' }}>Remove</Text></Pressable></View></View>
-          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>EXTRACTED LECTURE CONTENT</Text>{lecturePreview(file)}<Text style={styles.small}>Text was extracted in this browser. Slide boundaries are preserved for PPTX; page boundaries are preserved for text-based PDFs.</Text></View>}
+          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>ORIGINAL LECTURE PAGE · QUESTION-LINKED HIGHLIGHTS</Text>{lecturePreview(file)}<Text style={styles.small}>The original page is rendered in this browser. Yellow marks words connected to your questions; slide and page text stay on this device.</Text></View>}
         </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
       </View>
       <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><ActionButton label={busy ? 'Reading file…' : 'STEP 05 · Match questions to source'} onPress={matchQuestions} /><ActionButton label="Draft questions from source" secondary onPress={generateQuestions} /><ActionButton label="Clear workspace" secondary onPress={() => setConfirmClear(true)} /></View>
