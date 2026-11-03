@@ -327,40 +327,48 @@ function ActionButton({ label, onPress, secondary = false, compact = false }: { 
   return <Pressable accessibilityRole="button" onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
 }
 
-function appendTermHighlights(root: Element, highlightTerms: string[], htmlText: boolean) {
+function drawTermHighlights(host: HTMLElement, textRoot: Element, highlightTerms: string[]) {
   const usableTerms = [...new Set(highlightTerms.map((term) => term.trim()).filter((term) => term.length > 2))].sort((a, b) => b.length - a.length);
   if (!usableTerms.length) return;
   const escapedTerms = usableTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const pattern = new RegExp(`\\b(${escapedTerms.join('|')})\\b`, 'gi');
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
   const textNodes: Node[] = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode as Node);
+  const boxes: DOMRect[] = [];
   textNodes.forEach((textNode) => {
     const value = textNode.nodeValue || '';
+    const parent = textNode.parentElement;
+    if (!parent || parent.closest('style,title,desc,metadata')) return;
+    if (!parent.closest('foreignObject, text, tspan, .recall-pdf-text-layer')) return;
     pattern.lastIndex = 0;
-    if (!pattern.test(value)) return;
-    pattern.lastIndex = 0;
-    const owner = textNode.ownerDocument || document;
-    const fragment = owner.createDocumentFragment();
-    let cursor = 0;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(value))) {
-      if (match.index > cursor) fragment.appendChild(owner.createTextNode(value.slice(cursor, match.index)));
-      const highlighted = owner.createElementNS(htmlText ? 'http://www.w3.org/1999/xhtml' : 'http://www.w3.org/2000/svg', htmlText ? 'span' : 'tspan');
-      highlighted.textContent = match[0];
-      highlighted.setAttribute('style', htmlText
-        ? 'background-color:#f5d85e;color:#193326;font-weight:800;border-radius:2px;box-shadow:0 0 0 1px #f5d85e;'
-        : 'fill:#f5d85e;stroke:#193326;stroke-width:0.7px;paint-order:stroke;');
-      highlighted.setAttribute('data-recall-highlight', 'true');
-      fragment.appendChild(highlighted);
-      cursor = match.index + match[0].length;
+      const range = (textNode.ownerDocument || document).createRange();
+      range.setStart(textNode, match.index);
+      range.setEnd(textNode, match.index + match[0].length);
+      boxes.push(...Array.from(range.getClientRects()).filter((rect) => rect.width > 1 && rect.height > 3));
+      range.detach();
     }
-    if (cursor < value.length) fragment.appendChild(owner.createTextNode(value.slice(cursor)));
-    textNode.parentNode?.replaceChild(fragment, textNode);
   });
+  if (!boxes.length) return;
+  host.querySelector('[data-recall-highlight-layer]')?.remove();
+  const hostRect = host.getBoundingClientRect();
+  const originX = hostRect.left + host.clientLeft;
+  const originY = hostRect.top + host.clientTop;
+  const overlay = document.createElement('div');
+  overlay.setAttribute('data-recall-highlight-layer', 'true');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.style.cssText = 'position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden;';
+  boxes.forEach((rect) => {
+    const mark = document.createElement('div');
+    mark.style.cssText = `position:absolute;left:${rect.left - originX}px;top:${rect.top - originY}px;width:${rect.width}px;height:${rect.height}px;box-sizing:border-box;background:rgba(255,210,32,.30);border-bottom:2px solid rgba(174,120,0,.78);border-radius:2px;pointer-events:none;`;
+    overlay.appendChild(mark);
+  });
+  host.appendChild(overlay);
 }
 
-function highlightPresentationSvg(svg: SVGSVGElement, highlightTerms: string[]) {
+function sanitizePresentationSvg(svg: SVGSVGElement) {
   svg.querySelectorAll('script,iframe,object,embed').forEach((node) => node.remove());
   svg.querySelectorAll('style').forEach((style) => {
     if (/@import|url\(\s*['"]?(?:https?:|\/\/)/i.test(style.textContent || '')) style.remove();
@@ -372,9 +380,6 @@ function highlightPresentationSvg(svg: SVGSVGElement, highlightTerms: string[]) 
       if (attribute.name.toLowerCase() === 'style' && /url\(\s*['"]?(?:https?:|\/\/)/i.test(attribute.value)) element.removeAttribute(attribute.name);
     });
   });
-  svg.querySelectorAll('foreignObject').forEach((foreignObject) => appendTermHighlights(foreignObject, highlightTerms, true));
-  const vectorText = [...svg.querySelectorAll('text')].filter((node) => !node.closest('foreignObject'));
-  vectorText.forEach((node) => appendTermHighlights(node, highlightTerms, false));
 }
 
 function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fallbackText }: { fileId: string; fileName: string; pageIndex: number; highlightTerms: string[]; fallbackText: string }) {
@@ -420,7 +425,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           const parsed = new DOMParser().parseFromString(renderSlideToSvg(presentation, slide), 'image/svg+xml');
           if (parsed.querySelector('parsererror')) throw new Error('This slide could not be rendered.');
           const svg = parsed.documentElement as unknown as SVGSVGElement;
-          highlightPresentationSvg(svg, termsForPage);
+          sanitizePresentationSvg(svg);
           svg.setAttribute('width', '100%');
           svg.setAttribute('height', '100%');
           svg.style.display = 'block';
@@ -430,6 +435,17 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           host.style.aspectRatio = `${presentation.width} / ${presentation.height}`;
           host.style.height = 'auto';
           host.replaceChildren(document.importNode(svg, true));
+          const renderedSvg = host.querySelector('svg');
+          if (renderedSvg) {
+            const paintHighlights = () => { if (!cancelled && renderedSvg.isConnected) drawTermHighlights(host, renderedSvg, termsForPage); };
+            const frame = window.requestAnimationFrame(paintHighlights);
+            pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => { window.cancelAnimationFrame(frame); window.requestAnimationFrame(paintHighlights); }) : null;
+            pdfObserver?.observe(host);
+            if (!pdfObserver) {
+              pdfResizeListener = paintHighlights;
+              window.addEventListener('resize', pdfResizeListener);
+            }
+          }
           setError('');
           return;
         }
@@ -478,7 +494,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
             activeTextLayer = textLayer;
             await textLayer.render();
             if (cancelled || generation !== renderGeneration) return;
-            appendTermHighlights(textContainer, termsForPage, true);
+            drawTermHighlights(host, textContainer, termsForPage);
             setError('');
           } catch (renderError) {
             if (renderGeneration === generation && !cancelled && !(renderError instanceof Error && renderError.name === 'RenderingCancelledException')) throw renderError;
