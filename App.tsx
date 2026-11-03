@@ -327,50 +327,72 @@ function ActionButton({ label, onPress, secondary = false, compact = false }: { 
   return <Pressable accessibilityRole="button" onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
 }
 
-function drawTermHighlights(host: HTMLElement, textRoot: Element, highlightTerms: string[]) {
+function wrapMatchedWords(textRoot: Element, highlightTerms: string[], mode: 'slide' | 'pdf') {
   const usableTerms = [...new Set(highlightTerms.map((term) => term.trim()).filter((term) => term.length > 2))].sort((a, b) => b.length - a.length);
   if (!usableTerms.length) return;
   const escapedTerms = usableTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const pattern = new RegExp(`\\b(${escapedTerms.join('|')})\\b`, 'gi');
-  const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
+  const walker = (textRoot.ownerDocument || document).createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
   const textNodes: Node[] = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode as Node);
-  const boxes: { rect: DOMRect; blend: 'multiply' | 'screen' }[] = [];
   textNodes.forEach((textNode) => {
     const value = textNode.nodeValue || '';
     const parent = textNode.parentElement;
     if (!parent || parent.closest('style,title,desc,metadata')) return;
-    if (!parent.closest('foreignObject, text, tspan, .recall-pdf-text-layer')) return;
-    const computed = window.getComputedStyle(parent);
-    const vectorText = parent.namespaceURI === 'http://www.w3.org/2000/svg' || !!parent.closest('text, tspan');
-    const textColor = vectorText && computed.fill !== 'none' ? computed.fill : computed.color;
-    const rgb = textColor.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
-    const textIsLight = !!rgb && (Number(rgb[1]) * 0.2126 + Number(rgb[2]) * 0.7152 + Number(rgb[3]) * 0.0722) > 150;
+    const isPdfText = mode === 'pdf' && !!parent.closest('.recall-pdf-text-layer');
+    const isSlideHtml = mode === 'slide' && !!parent.closest('foreignObject');
+    if (!isPdfText && !isSlideHtml) return;
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
+    let cursor = 0;
+    const owner = textNode.ownerDocument || document;
+    const fragment = owner.createDocumentFragment();
     while ((match = pattern.exec(value))) {
-      const range = (textNode.ownerDocument || document).createRange();
-      range.setStart(textNode, match.index);
-      range.setEnd(textNode, match.index + match[0].length);
-      Array.from(range.getClientRects()).filter((rect) => rect.width > 1 && rect.height > 3).forEach((rect) => boxes.push({ rect, blend: textIsLight ? 'screen' : 'multiply' }));
-      range.detach();
+      if (match.index > cursor) fragment.appendChild(owner.createTextNode(value.slice(cursor, match.index)));
+      const mark = owner.createElementNS('http://www.w3.org/1999/xhtml', 'span');
+      mark.textContent = match[0];
+      // Background-only inline styling keeps the source font, color, spacing, and line breaks intact.
+      // PDF.js paints the page first and uses transparent text spans for selection. Blend
+      // the inline mark into that page so the original glyphs stay visible underneath.
+      mark.setAttribute('style', `background-color:rgba(255,220,78,${mode === 'pdf' ? '.64' : '.56'});border-radius:.1em;${isPdfText ? 'color:transparent;mix-blend-mode:multiply;' : ''}`);
+      mark.setAttribute('data-recall-highlight', 'true');
+      fragment.appendChild(mark);
+      cursor = match.index + match[0].length;
     }
+    if (cursor < value.length) fragment.appendChild(owner.createTextNode(value.slice(cursor)));
+    if (cursor > 0) textNode.parentNode?.replaceChild(fragment, textNode);
   });
-  if (!boxes.length) return;
-  host.querySelector('[data-recall-highlight-layer]')?.remove();
-  const hostRect = host.getBoundingClientRect();
-  const originX = hostRect.left + host.clientLeft;
-  const originY = hostRect.top + host.clientTop;
-  const overlay = document.createElement('div');
-  overlay.setAttribute('data-recall-highlight-layer', 'true');
-  overlay.setAttribute('aria-hidden', 'true');
-  overlay.style.cssText = 'position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden;';
-  boxes.forEach(({ rect, blend }) => {
-    const mark = document.createElement('div');
-    mark.style.cssText = `position:absolute;left:${rect.left - originX}px;top:${rect.top - originY}px;width:${rect.width}px;height:${rect.height}px;box-sizing:border-box;background:rgba(255,211,38,.88);mix-blend-mode:${blend};border-bottom:2px solid rgba(174,120,0,.82);border-radius:2px;pointer-events:none;`;
-    overlay.appendChild(mark);
+}
+
+function underlineVectorMatches(textRoot: Element, highlightTerms: string[]) {
+  const usableTerms = [...new Set(highlightTerms.map((term) => term.trim()).filter((term) => term.length > 2))].sort((a, b) => b.length - a.length);
+  if (!usableTerms.length) return;
+  const pattern = new RegExp(`\\b(${usableTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi');
+  const walker = (textRoot.ownerDocument || document).createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
+  const nodes: Node[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Node);
+  nodes.forEach((node) => {
+    const parent = node.parentElement;
+    if (!parent || parent.closest('foreignObject,style,title,desc,metadata') || !parent.closest('text,tspan')) return;
+    const value = node.nodeValue || '';
+    pattern.lastIndex = 0;
+    if (!pattern.test(value)) return;
+    pattern.lastIndex = 0;
+    const owner = node.ownerDocument || document;
+    const fragment = owner.createDocumentFragment();
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(value))) {
+      if (match.index > cursor) fragment.appendChild(owner.createTextNode(value.slice(cursor, match.index)));
+      const markedRun = owner.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+      markedRun.textContent = match[0];
+      markedRun.setAttribute('style', 'text-decoration:underline;text-decoration-color:#c49200;text-decoration-thickness:0.13em;text-underline-offset:0.14em;');
+      fragment.appendChild(markedRun);
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < value.length) fragment.appendChild(owner.createTextNode(value.slice(cursor)));
+    if (cursor > 0) node.parentNode?.replaceChild(fragment, node);
   });
-  host.appendChild(overlay);
 }
 
 function sanitizePresentationSvg(svg: SVGSVGElement) {
@@ -403,7 +425,6 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
     let activeTextLayer: InstanceType<typeof pdfjs.TextLayer> | null = null;
     let pdfObserver: ResizeObserver | null = null;
     let pdfResizeListener: (() => void) | null = null;
-    let highlightFrame = 0;
     let renderGeneration = 0;
     const termsForPage = normalizedTerms ? normalizedTerms.split('|').filter(Boolean) : [];
     setError('');
@@ -432,6 +453,9 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           if (parsed.querySelector('parsererror')) throw new Error('This slide could not be rendered.');
           const svg = parsed.documentElement as unknown as SVGSVGElement;
           sanitizePresentationSvg(svg);
+          const foreignObjects = [...svg.querySelectorAll('foreignObject')];
+          foreignObjects.forEach((foreignObject) => wrapMatchedWords(foreignObject, termsForPage, 'slide'));
+          underlineVectorMatches(svg, termsForPage);
           svg.setAttribute('width', '100%');
           svg.setAttribute('height', '100%');
           svg.style.display = 'block';
@@ -441,18 +465,6 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           host.style.aspectRatio = `${presentation.width} / ${presentation.height}`;
           host.style.height = 'auto';
           host.replaceChildren(document.importNode(svg, true));
-          const renderedSvg = host.querySelector('svg');
-          if (renderedSvg) {
-            const paintHighlights = () => { if (!cancelled && renderedSvg.isConnected) drawTermHighlights(host, renderedSvg, termsForPage); };
-            const scheduleHighlights = () => { window.cancelAnimationFrame(highlightFrame); highlightFrame = window.requestAnimationFrame(paintHighlights); };
-            scheduleHighlights();
-            pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleHighlights) : null;
-            pdfObserver?.observe(host);
-            if (!pdfObserver) {
-              pdfResizeListener = scheduleHighlights;
-              window.addEventListener('resize', pdfResizeListener);
-            }
-          }
           setError('');
           return;
         }
@@ -501,7 +513,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
             activeTextLayer = textLayer;
             await textLayer.render();
             if (cancelled || generation !== renderGeneration) return;
-            drawTermHighlights(host, textContainer, termsForPage);
+            wrapMatchedWords(textContainer, termsForPage, 'pdf');
             setError('');
           } catch (renderError) {
             if (renderGeneration === generation && !cancelled && !(renderError instanceof Error && renderError.name === 'RenderingCancelledException')) throw renderError;
@@ -522,7 +534,6 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
       renderGeneration += 1;
       activePdfTask?.cancel();
       activeTextLayer?.cancel();
-      window.cancelAnimationFrame(highlightFrame);
       void activePdfDocument?.destroy().catch(() => undefined);
       pdfObserver?.disconnect();
       if (pdfResizeListener) window.removeEventListener('resize', pdfResizeListener);
