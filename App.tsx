@@ -335,19 +335,24 @@ function drawTermHighlights(host: HTMLElement, textRoot: Element, highlightTerms
   const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
   const textNodes: Node[] = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode as Node);
-  const boxes: DOMRect[] = [];
+  const boxes: { rect: DOMRect; blend: 'multiply' | 'screen' }[] = [];
   textNodes.forEach((textNode) => {
     const value = textNode.nodeValue || '';
     const parent = textNode.parentElement;
     if (!parent || parent.closest('style,title,desc,metadata')) return;
     if (!parent.closest('foreignObject, text, tspan, .recall-pdf-text-layer')) return;
+    const computed = window.getComputedStyle(parent);
+    const vectorText = parent.namespaceURI === 'http://www.w3.org/2000/svg' || !!parent.closest('text, tspan');
+    const textColor = vectorText && computed.fill !== 'none' ? computed.fill : computed.color;
+    const rgb = textColor.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+    const textIsLight = !!rgb && (Number(rgb[1]) * 0.2126 + Number(rgb[2]) * 0.7152 + Number(rgb[3]) * 0.0722) > 150;
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(value))) {
       const range = (textNode.ownerDocument || document).createRange();
       range.setStart(textNode, match.index);
       range.setEnd(textNode, match.index + match[0].length);
-      boxes.push(...Array.from(range.getClientRects()).filter((rect) => rect.width > 1 && rect.height > 3));
+      Array.from(range.getClientRects()).filter((rect) => rect.width > 1 && rect.height > 3).forEach((rect) => boxes.push({ rect, blend: textIsLight ? 'screen' : 'multiply' }));
       range.detach();
     }
   });
@@ -360,9 +365,9 @@ function drawTermHighlights(host: HTMLElement, textRoot: Element, highlightTerms
   overlay.setAttribute('data-recall-highlight-layer', 'true');
   overlay.setAttribute('aria-hidden', 'true');
   overlay.style.cssText = 'position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden;';
-  boxes.forEach((rect) => {
+  boxes.forEach(({ rect, blend }) => {
     const mark = document.createElement('div');
-    mark.style.cssText = `position:absolute;left:${rect.left - originX}px;top:${rect.top - originY}px;width:${rect.width}px;height:${rect.height}px;box-sizing:border-box;background:rgba(255,210,32,.30);border-bottom:2px solid rgba(174,120,0,.78);border-radius:2px;pointer-events:none;`;
+    mark.style.cssText = `position:absolute;left:${rect.left - originX}px;top:${rect.top - originY}px;width:${rect.width}px;height:${rect.height}px;box-sizing:border-box;background:rgba(255,211,38,.88);mix-blend-mode:${blend};border-bottom:2px solid rgba(174,120,0,.82);border-radius:2px;pointer-events:none;`;
     overlay.appendChild(mark);
   });
   host.appendChild(overlay);
@@ -398,6 +403,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
     let activeTextLayer: InstanceType<typeof pdfjs.TextLayer> | null = null;
     let pdfObserver: ResizeObserver | null = null;
     let pdfResizeListener: (() => void) | null = null;
+    let highlightFrame = 0;
     let renderGeneration = 0;
     const termsForPage = normalizedTerms ? normalizedTerms.split('|').filter(Boolean) : [];
     setError('');
@@ -438,11 +444,12 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           const renderedSvg = host.querySelector('svg');
           if (renderedSvg) {
             const paintHighlights = () => { if (!cancelled && renderedSvg.isConnected) drawTermHighlights(host, renderedSvg, termsForPage); };
-            const frame = window.requestAnimationFrame(paintHighlights);
-            pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => { window.cancelAnimationFrame(frame); window.requestAnimationFrame(paintHighlights); }) : null;
+            const scheduleHighlights = () => { window.cancelAnimationFrame(highlightFrame); highlightFrame = window.requestAnimationFrame(paintHighlights); };
+            scheduleHighlights();
+            pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleHighlights) : null;
             pdfObserver?.observe(host);
             if (!pdfObserver) {
-              pdfResizeListener = paintHighlights;
+              pdfResizeListener = scheduleHighlights;
               window.addEventListener('resize', pdfResizeListener);
             }
           }
@@ -515,6 +522,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
       renderGeneration += 1;
       activePdfTask?.cancel();
       activeTextLayer?.cancel();
+      window.cancelAnimationFrame(highlightFrame);
       void activePdfDocument?.destroy().catch(() => undefined);
       pdfObserver?.disconnect();
       if (pdfResizeListener) window.removeEventListener('resize', pdfResizeListener);
