@@ -324,7 +324,7 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
 }
 
 function ActionButton({ label, onPress, secondary = false, compact = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean }) {
-  return <Pressable accessibilityRole="button" onPress={onPress} style={[secondary ? styles.secondaryButton : styles.button, compact && { paddingVertical: 9, paddingHorizontal: 12 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
+  return <Pressable accessibilityRole="button" testID="torch-block" onPress={onPress} style={({ pressed }) => [secondary ? styles.secondaryButton : styles.button, { overflow: 'hidden' }, compact && { paddingVertical: 9, paddingHorizontal: 12 }, pressed && { transform: [{ scale: 0.975 }], opacity: 0.94 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
 }
 
 function wrapMatchedWords(textRoot: Element, highlightTerms: string[], mode: 'slide' | 'pdf') {
@@ -633,28 +633,46 @@ export default function App() {
     if (Platform.OS !== 'web') return;
     const style = document.createElement('style');
     style.textContent = `
-      @media (hover: hover) and (pointer: fine) {
-        [data-testid="torch-block"] { position: relative; isolation: isolate; transition: box-shadow 180ms ease, transform 180ms ease, background-image 180ms ease; }
-        [data-testid="torch-block"]::before { content: ''; position: absolute; inset: 0; z-index: 1; padding: 1.5px; border-radius: inherit; pointer-events: none; opacity: 0; background: radial-gradient(120px circle at var(--torch-x, 50%) var(--torch-y, 50%), rgba(220,255,232,1), rgba(126,238,164,.62) 30%, rgba(126,238,164,.14) 58%, transparent 78%); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; transition: opacity 160ms ease; }
-        [data-testid="torch-block"].torch-active { background-image: radial-gradient(175px circle at var(--torch-x, 50%) var(--torch-y, 50%), rgba(196,255,216,.23), rgba(106,222,153,.08) 40%, transparent 72%); box-shadow: 0 12px 34px rgba(0,0,0,.28); transform: translateY(-1px); }
-        [data-testid="torch-block"].torch-active::before { opacity: 1; }
-      }
+      [role="button"] { transition: transform 180ms ease, filter 180ms ease, box-shadow 220ms ease; }
+      [role="button"]:active { filter: brightness(1.08); transform: scale(.975); }
+      [data-testid="torch-block"] { position: relative; isolation: isolate; overflow: hidden; transition: box-shadow 220ms ease, transform 220ms ease; }
+      [data-testid="torch-block"] > * { position: relative; z-index: 2; }
+      [data-testid="torch-block"]::before { content: ''; position: absolute; inset: 0; z-index: 3; padding: 1.5px; border-radius: inherit; pointer-events: none; opacity: 0; background: radial-gradient(140px circle at var(--torch-x, 50%) var(--torch-y, 50%), rgba(220,255,232,1), rgba(126,238,164,.62) 30%, rgba(126,238,164,.14) 58%, transparent 78%); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; transition: opacity 260ms ease; }
+      [data-testid="torch-block"]::after { content: ''; position: absolute; z-index: 0; left: var(--torch-x, 50%); top: var(--torch-y, 50%); width: 440px; height: 440px; border-radius: 50%; pointer-events: none; opacity: 0; background: radial-gradient(circle, rgba(196,255,216,.26) 0%, rgba(106,222,153,.12) 42%, rgba(106,222,153,.04) 60%, transparent 73%); transform: translate(-50%,-50%) scale(.28); transition: transform 720ms cubic-bezier(.18,.72,.24,1), opacity 280ms ease; }
+      [data-testid="torch-block"].torch-active { box-shadow: 0 12px 34px rgba(0,0,0,.28); transform: translateY(-1px); }
+      [data-testid="torch-block"].torch-active::before, [data-testid="torch-block"].torch-active::after { opacity: 1; }
+      [data-testid="torch-block"].torch-active::after { transform: translate(-50%,-50%) scale(.5); }
+      [data-testid="torch-block"].torch-pressed { transform: translateY(0) scale(.99); }
+      [data-testid="torch-block"].torch-pressed::after { transform: translate(-50%,-50%) scale(1); transition-duration: 1100ms; }
       @media (prefers-reduced-motion: reduce) { [data-testid="torch-block"] { transition: none !important; } }
     `;
     document.head.appendChild(style);
     const move = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-testid="torch-block"]') : null;
-      document.querySelectorAll<HTMLElement>('[data-testid="torch-block"].torch-active').forEach((card) => { if (card !== target) card.classList.remove('torch-active'); });
+      document.querySelectorAll<HTMLElement>('[data-testid="torch-block"].torch-active').forEach((card) => { if (card !== target) { card.classList.remove('torch-active'); card.classList.remove('torch-pressed'); } });
       if (!target) return;
       const bounds = target.getBoundingClientRect();
       target.style.setProperty('--torch-x', `${event.clientX - bounds.left}px`);
       target.style.setProperty('--torch-y', `${event.clientY - bounds.top}px`);
       target.classList.add('torch-active');
     };
-    const leave = (event: PointerEvent) => { if (!event.relatedTarget) document.querySelectorAll('[data-testid="torch-block"].torch-active').forEach((card) => card.classList.remove('torch-active')); };
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0 && event.pointerType !== 'touch') return;
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-testid="torch-block"]') : null;
+      if (!target) return;
+      const bounds = target.getBoundingClientRect();
+      target.style.setProperty('--torch-x', `${event.clientX - bounds.left}px`);
+      target.style.setProperty('--torch-y', `${event.clientY - bounds.top}px`);
+      target.classList.add('torch-active', 'torch-pressed');
+    };
+    const release = () => document.querySelectorAll<HTMLElement>('[data-testid="torch-block"].torch-pressed').forEach((card) => card.classList.remove('torch-pressed'));
+    const leave = (event: PointerEvent) => { if (!event.relatedTarget) document.querySelectorAll<HTMLElement>('[data-testid="torch-block"].torch-active').forEach((card) => { card.classList.remove('torch-active'); card.classList.remove('torch-pressed'); }); };
     document.addEventListener('pointermove', move);
+    document.addEventListener('pointerdown', down);
+    document.addEventListener('pointerup', release);
+    document.addEventListener('pointercancel', release);
     document.addEventListener('pointerout', leave);
-    return () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerout', leave); style.remove(); };
+    return () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerdown', down); document.removeEventListener('pointerup', release); document.removeEventListener('pointercancel', release); document.removeEventListener('pointerout', leave); style.remove(); };
   }, []);
 
   useEffect(() => {
@@ -1096,9 +1114,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <Text style={[styles.small, { textAlign: 'center', paddingVertical: 18 }]}>Recall Loop · v0.1 · {demoMaterial ? 'sample content' : 'local workspace'}</Text>
   </View>;
 
-  const lockInScreen = <View style={[styles.content, { width: '100%', maxWidth: 1240, alignSelf: 'center', alignItems: 'center' }]}>
+  const lockInScreen = <View style={[styles.content, { width: '100%', maxWidth: 1120, alignSelf: 'center', alignItems: 'center' }]}>
     <View style={{ width: '100%', maxWidth: 760, alignItems: 'center', gap: 8 }}><Text style={[styles.label, { color: '#8fcba6', textAlign: 'center' }]}>LOCK IN · PICK YOUR PACE</Text><Text style={[styles.title, { marginTop: 2, textAlign: 'center' }]}>How much time do you have?</Text><Text style={[styles.body, { textAlign: 'center' }]}>Choose a session style. Recall Loop will guide you through the right amount of recall, source review, and retry.</Text></View>
-    <View style={[styles.row, { width: '100%', justifyContent: 'center' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 400, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
+    <View style={[styles.row, { width: '100%', justifyContent: 'center' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 360, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap', marginTop: 2 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open Materials'}</Text></Pressable></View>
     <Text style={[styles.small, { textAlign: 'center' }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions · ${linkedCount} source links to verify` : 'Add notes and questions in Materials before starting a session.'}</Text>
   </View>;
