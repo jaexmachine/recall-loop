@@ -13,7 +13,6 @@ import {
 } from 'react-native';
 import { BlurTargetView, BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
-import Svg, { Path } from 'react-native-svg';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -650,7 +649,8 @@ export default function App() {
       [data-testid="nav-glass-indicator"] { z-index: 0; border: 1px solid rgba(190,255,216,.34); background: linear-gradient(135deg, rgba(202,255,222,.25), rgba(112,180,139,.13) 48%, rgba(255,255,255,.07)); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), inset 0 -1px 0 rgba(130,231,168,.1), 0 7px 24px rgba(0,0,0,.18); -webkit-backdrop-filter: blur(15px) saturate(155%); backdrop-filter: blur(15px) saturate(155%); will-change: left, top, width, height, border-radius, transform; transition: left 520ms cubic-bezier(.2,.82,.25,1), top 520ms cubic-bezier(.2,.82,.25,1), width 520ms cubic-bezier(.2,.82,.25,1), height 520ms cubic-bezier(.2,.82,.25,1); }
       [data-testid="nav-track"].nav-liquid-morph [data-testid="nav-glass-indicator"] { animation: nav-glass-morph 680ms cubic-bezier(.2,.8,.25,1) both; }
       @keyframes nav-glass-morph { 0% { border-radius: 999px; transform: scale(1,1); } 24% { border-radius: 42% 58% 50% 50% / 55% 44% 56% 45%; transform: scale(1.14,.78); } 52% { border-radius: 58% 42% 46% 54% / 43% 57% 43% 57%; transform: scale(.96,1.12); } 76% { border-radius: 999px; transform: scale(1.035,.97); } 100% { border-radius: 999px; transform: scale(1,1); } }
-      [data-testid="brand-glass"], [data-testid="register-glass"] { border: 1px solid rgba(190,255,216,.28); background: linear-gradient(135deg, rgba(202,255,222,.13), rgba(112,180,139,.07) 54%, rgba(255,255,255,.035)); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -1px 0 rgba(130,231,168,.08), 0 6px 20px rgba(0,0,0,.14); -webkit-backdrop-filter: blur(14px) saturate(150%); backdrop-filter: blur(14px) saturate(150%); }
+      [data-testid="register-glass"] { border: 1px solid rgba(190,255,216,.28); background: linear-gradient(135deg, rgba(202,255,222,.13), rgba(112,180,139,.07) 54%, rgba(255,255,255,.035)); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -1px 0 rgba(130,231,168,.08), 0 6px 20px rgba(0,0,0,.14); -webkit-backdrop-filter: blur(14px) saturate(150%); backdrop-filter: blur(14px) saturate(150%); }
+      [data-testid="brand-wordmark"] { font-family: "Segoe UI Variable", "Inter", system-ui, sans-serif; font-weight: 600; letter-spacing: -.65px; color: transparent !important; background: linear-gradient(180deg, #f5fff8 8%, #d5f2df 54%, #91c7a2 100%); -webkit-background-clip: text; background-clip: text; text-shadow: 0 0 13px rgba(177,255,202,.28); filter: drop-shadow(0 1px 0 rgba(255,255,255,.16)); }
       @media (prefers-reduced-motion: reduce) { [data-testid="torch-block"], [data-testid="nav-glass-indicator"] { transition: none !important; } [data-testid="nav-track"].nav-liquid-morph [data-testid="nav-glass-indicator"] { animation: none !important; } }
     `;
     document.head.appendChild(style);
@@ -1087,13 +1087,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
 
-  const brand = <Pressable testID="brand-glass" accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(190,255,216,0.28)', backgroundColor: 'rgba(202,255,222,0.08)' }]}>
-    <Svg accessibilityElementsHidden width={42} height={38} viewBox="0 0 44 40" fill="none">
-      <Path d="M4 7.5C10.2 4.4 16.2 5.7 22 9.3C27.8 5.7 33.8 4.4 40 7.5V32.1C33.7 29.1 27.7 30.1 22 34C16.3 30.1 10.3 29.1 4 32.1V7.5Z" stroke="#94dfa9" strokeWidth={2.3} strokeLinejoin="round" />
-      <Path d="M22 9.7V33.3" stroke="#94dfa9" strokeWidth={2} strokeLinecap="round" />
-      <Path d="M8.5 20C12.2 13.8 16.6 14 22 20C27.4 26 31.8 26.2 35.5 20C31.8 13.8 27.4 14 22 20C16.6 26 12.2 26.2 8.5 20Z" stroke="#e9d77b" strokeWidth={2.35} strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-    <Text style={{ color: '#f4fff7', fontSize: 20, fontWeight: '800', letterSpacing: -0.7, textShadowColor: 'rgba(211,255,224,0.30)', textShadowRadius: 9, textShadowOffset: { width: 0, height: 0 } }}>Recall Loop</Text>
+  const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto', paddingVertical: 7 }]}>
+    <Text testID="brand-wordmark" style={{ color: Platform.OS === 'web' ? 'transparent' : '#dff5e6', fontFamily: Platform.OS === 'web' ? 'Segoe UI Variable, Inter, system-ui, sans-serif' : undefined, fontSize: 23, fontWeight: '600', letterSpacing: -0.65, textShadowColor: 'rgba(177,255,202,0.28)', textShadowRadius: 12, textShadowOffset: { width: 0, height: 1 } }}>Recall Loop</Text>
   </Pressable>
   const registerButton = <Pressable testID="register-glass" accessibilityRole="button" style={{ minHeight: 44, paddingVertical: 10, paddingHorizontal: 18, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(190,255,216,0.28)', backgroundColor: 'rgba(202,255,222,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
   const pinnedNav = <View testID="nav-track" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
