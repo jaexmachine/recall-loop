@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { BlurTargetView, BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
+import Svg, { Path } from 'react-native-svg';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -1088,6 +1089,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   ];
 
   const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto', paddingVertical: 7 }]}>
+    <Svg accessibilityElementsHidden width={34} height={30} viewBox="0 0 36 32" fill="none">
+      <Path d="M4.5 7.5C9.1 5.6 13.6 6.1 18 9.2C22.4 6.1 26.9 5.6 31.5 7.5V25.6C26.9 23.8 22.4 24.1 18 27C13.6 24.1 9.1 23.8 4.5 25.6V7.5Z" stroke="#94dfa9" strokeWidth={2} strokeLinejoin="round" />
+      <Path d="M18 9.5V26" stroke="#94dfa9" strokeWidth={1.6} strokeLinecap="round" />
+      <Path d="M8 16C10.6 12.5 13.4 12.5 18 16C22.6 19.5 25.4 19.5 28 16C25.4 12.5 22.6 12.5 18 16C13.4 19.5 10.6 19.5 8 16Z" stroke="#e9d77b" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
     <Text testID="brand-wordmark" style={{ color: Platform.OS === 'web' ? 'transparent' : '#dff5e6', fontFamily: Platform.OS === 'web' ? 'Segoe UI Variable, Inter, system-ui, sans-serif' : undefined, fontSize: 23, fontWeight: '600', letterSpacing: -0.65, textShadowColor: 'rgba(177,255,202,0.28)', textShadowRadius: 12, textShadowOffset: { width: 0, height: 1 } }}>Recall Loop</Text>
   </Pressable>
   const registerButton = <Pressable testID="register-glass" accessibilityRole="button" style={{ minHeight: 44, paddingVertical: 10, paddingHorizontal: 18, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(190,255,216,0.28)', backgroundColor: 'rgba(202,255,222,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
@@ -1137,7 +1143,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   </View>;
   const home = <View style={[styles.content, { paddingTop: 10, gap: 0 }]}>
     <View testID="scroll-reveal" style={{ minHeight: compact ? undefined : 520, justifyContent: 'center', alignItems: 'flex-start', paddingVertical: compact ? 38 : 64, gap: 20 }}>
-      <View style={{ width: '100%', maxWidth: 800, alignItems: 'flex-start', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8 }]}>A STUDY LOOP THAT ADAPTS</Text><Text style={[styles.title, { fontSize: wide ? 52 : compact ? 34 : 42, lineHeight: wide ? 62 : compact ? 42 : 52 }]}>Study with a loop that sticks.</Text><Text style={[styles.body, { fontSize: 17, lineHeight: 27, maxWidth: 650 }]}>Recall Loop turns your notes, lecture files, and class questions into a focused study session. Start from memory, review the source, then try again.</Text></View>
+      <View style={{ width: '100%', maxWidth: 800, alignItems: 'flex-start', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8 }]}>LESS REREADING · MORE RECALL</Text><Text style={[styles.title, { fontSize: wide ? 52 : compact ? 34 : 42, lineHeight: wide ? 62 : compact ? 42 : 52 }]}>Study with a loop that sticks.</Text><Text style={[styles.body, { fontSize: 17, lineHeight: 27, maxWidth: 650 }]}>Turn notes and lecture files into focused, question-led practice.</Text></View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 4 }}><ActionButton label={hasStudyContent ? 'Choose a study mode →' : 'Get started →'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} /><ActionButton secondary label="See how it works ↓" onPress={() => scrollRef.current?.scrollToEnd({ animated: true })} /></View>
       <Text style={[styles.small, { marginTop: 3 }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions ready` : 'Add a subject and your study materials to begin.'}</Text>
     </View>
