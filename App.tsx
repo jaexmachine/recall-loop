@@ -551,7 +551,7 @@ export default function App() {
   const compact = width <= 640;
   const ambientRef = useRef<React.ComponentRef<typeof View>>(null);
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
-  const [page, setPage] = useState<'home' | 'import' | 'study' | 'insights'>('home');
+  const [page, setPage] = useState<'home' | 'modes' | 'import' | 'study' | 'insights'>('home');
   const [notes, setNotes] = useState('');
   const [questionsText, setQuestionsText] = useState('');
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -1028,6 +1028,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const navItems = [
     { id: 'home' as const, icon: '⌂', label: 'Home' },
+    { id: 'modes' as const, icon: '◉', label: 'Lock in' },
     { id: 'import' as const, icon: '▤', label: 'Materials' },
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
@@ -1085,16 +1086,21 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </React.Fragment>)}</View>
   </View>;
   const home = <View style={[styles.content, { paddingTop: 10, gap: 0 }]}>
-    <View testID="scroll-reveal" style={{ minHeight: compact ? undefined : 590, justifyContent: 'center', alignItems: 'center', paddingVertical: compact ? 38 : 56, gap: 20 }}>
-      <View style={{ width: '100%', maxWidth: 780, alignItems: 'center', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8, textAlign: 'center' }]}>CHOOSE YOUR PACE</Text><Text style={[styles.title, { fontSize: wide ? 48 : compact ? 30 : 36, lineHeight: wide ? 58 : compact ? 38 : 44, textAlign: 'center' }]}>What do you want to do?</Text><Text style={[styles.body, { fontSize: 16, lineHeight: 25, textAlign: 'center', maxWidth: 610 }]}>Choose a study pace below, then add your notes and practice questions to begin.</Text></View>
-      <View style={[styles.row, { width: '100%', maxWidth: 1000, marginTop: 16, justifyContent: compact || width <= 900 ? 'center' : 'flex-start' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 320, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ padding: 11 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open My materials'}</Text></Pressable></View>
-      <Text style={[styles.small, { textAlign: 'center' }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions · ${linkedCount} source links to verify` : 'No notes or questions saved yet'}</Text>
+    <View testID="scroll-reveal" style={{ minHeight: compact ? undefined : 520, justifyContent: 'center', alignItems: 'flex-start', paddingVertical: compact ? 38 : 64, gap: 20 }}>
+      <View style={{ width: '100%', maxWidth: 800, alignItems: 'flex-start', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8 }]}>A STUDY LOOP THAT ADAPTS</Text><Text style={[styles.title, { fontSize: wide ? 52 : compact ? 34 : 42, lineHeight: wide ? 62 : compact ? 42 : 52 }]}>Study with a loop that sticks.</Text><Text style={[styles.body, { fontSize: 17, lineHeight: 27, maxWidth: 650 }]}>Recall Loop turns your notes, lecture files, and class questions into a focused study session. Start from memory, review the source, then try again.</Text></View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 4 }}><ActionButton label={hasStudyContent ? 'Choose a study mode →' : 'Get started →'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} /><ActionButton secondary label="See how it works ↓" onPress={() => scrollRef.current?.scrollToEnd({ animated: true })} /></View>
+      <Text style={[styles.small, { marginTop: 3 }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions ready` : 'Add a subject and your study materials to begin.'}</Text>
     </View>
-
-    {materialsSection}
     {studyFlowSection}
+    {materialsSection}
     <Text style={[styles.small, { textAlign: 'center', paddingVertical: 18 }]}>Recall Loop · v0.1 · {demoMaterial ? 'sample content' : 'local workspace'}</Text>
+  </View>;
+
+  const lockInScreen = <View style={styles.content}>
+    <View style={{ gap: 8, maxWidth: 760 }}><Text style={[styles.label, { color: '#8fcba6' }]}>LOCK IN · PICK YOUR PACE</Text><Text style={[styles.title, { marginTop: 2 }]}>How much time do you have?</Text><Text style={styles.body}>Choose a session style. Recall Loop will guide you through the right amount of recall, source review, and retry.</Text></View>
+    <View style={[styles.row, { justifyContent: compact || width <= 900 ? 'center' : 'flex-start' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 320, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginTop: 2 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open Materials'}</Text></Pressable></View>
+    <Text style={styles.small}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions · ${linkedCount} source links to verify` : 'Add notes and questions in Materials before starting a session.'}</Text>
   </View>;
 
   const importScreen = <View style={styles.content}>
@@ -1160,7 +1166,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <View testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={styles.label}>RECENT RECALLS</Text>{history.length ? history.slice(0, 8).map((attempt) => { const positive = attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready'; const status = attempt.outcome === 'correct' ? 'Correct' : attempt.outcome === 'missed' ? 'Review' : attempt.outcome === 'self-rated-ready' ? 'Self-rated ready' : 'Needs review'; return <View key={attempt.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 10, gap: 4 }}><Text style={{ color: palette.ink, fontSize: 13, fontWeight: '700' }}>{attempt.question}</Text><Text style={[styles.small, { color: positive ? '#9fe1b5' : '#ffe49a' }]}>{status} · {attempt.mode} · {new Date(attempt.createdAt).toLocaleString()}</Text></View>; }) : <Text style={styles.body}>No answers yet. Your attempts will appear here after your first session.</Text>}</View>
   </View>;
 
-  const body = page === 'import' ? importScreen : page === 'study' ? studyScreen : page === 'insights' ? insightsScreen : home;
+  const body = page === 'import' ? importScreen : page === 'modes' ? lockInScreen : page === 'study' ? studyScreen : page === 'insights' ? insightsScreen : home;
 
   return <View style={styles.page}>
     <StatusBar style="light" />
