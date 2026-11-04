@@ -324,7 +324,7 @@ async function extractDocumentText(file: File): Promise<StudySegment[]> {
 }
 
 function ActionButton({ label, onPress, secondary = false, compact = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean }) {
-  return <Pressable accessibilityRole="button" testID="torch-block" onPress={onPress} style={({ pressed }) => [secondary ? styles.secondaryButton : styles.button, { overflow: 'hidden' }, compact && { paddingVertical: 9, paddingHorizontal: 12 }, pressed && { transform: [{ scale: 0.975 }], opacity: 0.94 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
+  return <Pressable accessibilityRole="button" testID="torch-block" onPress={onPress} style={({ pressed }) => [secondary ? styles.secondaryButton : styles.button, { overflow: 'hidden' }, compact && { paddingVertical: 9, paddingHorizontal: 12 }, pressed && { transform: [{ scale: 0.975 }], opacity: 0.96, backgroundColor: secondary ? 'rgba(190,255,216,0.17)' : 'rgba(188,255,218,0.28)', borderWidth: 1, borderColor: 'rgba(210,255,226,0.56)', shadowColor: '#b9ffd3', shadowOpacity: 0.22, shadowRadius: 16 }]}><Text style={{ color: secondary ? palette.ink : '#fff', fontWeight: '700', fontSize: compact ? 12 : 14, textAlign: 'center', flexShrink: 1 }}>{label}</Text></Pressable>;
 }
 
 function wrapMatchedWords(textRoot: Element, highlightTerms: string[], mode: 'slide' | 'pdf') {
@@ -552,6 +552,8 @@ export default function App() {
   const ambientRef = useRef<React.ComponentRef<typeof View>>(null);
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
   const [page, setPage] = useState<'home' | 'modes' | 'import' | 'study' | 'insights'>('home');
+  const activeNavId = page === 'study' ? 'modes' : page;
+  const previousNavId = useRef(activeNavId);
   const [notes, setNotes] = useState('');
   const [questionsText, setQuestionsText] = useState('');
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -634,7 +636,7 @@ export default function App() {
     const style = document.createElement('style');
     style.textContent = `
       [role="button"] { transition: transform 180ms ease, filter 180ms ease, box-shadow 220ms ease; }
-      [role="button"]:active { filter: brightness(1.08); transform: scale(.975); }
+      [role="button"]:active { filter: brightness(1.08); transform: scale(.975); border-color: rgba(210,255,226,.56); -webkit-backdrop-filter: blur(10px) saturate(150%); backdrop-filter: blur(10px) saturate(150%); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 22px rgba(158,255,190,.16); }
       [data-testid="torch-block"] { position: relative; isolation: isolate; overflow: hidden; transition: box-shadow 220ms ease, transform 220ms ease; }
       [data-testid="torch-block"] > * { position: relative; z-index: 2; }
       [data-testid="torch-block"]::before { content: ''; position: absolute; inset: 0; z-index: 3; padding: 1.5px; border-radius: inherit; pointer-events: none; opacity: 0; background: radial-gradient(140px circle at var(--torch-x, 50%) var(--torch-y, 50%), rgba(220,255,232,1), rgba(126,238,164,.62) 30%, rgba(126,238,164,.14) 58%, transparent 78%); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; transition: opacity 260ms ease; }
@@ -644,7 +646,12 @@ export default function App() {
       [data-testid="torch-block"].torch-active::after { transform: translate(-50%,-50%) scale(.5); }
       [data-testid="torch-block"].torch-pressed { transform: translateY(0) scale(.99); }
       [data-testid="torch-block"].torch-pressed::after { transform: translate(-50%,-50%) scale(1); transition-duration: 1100ms; }
-      @media (prefers-reduced-motion: reduce) { [data-testid="torch-block"] { transition: none !important; } }
+      [data-testid="nav-track"] { position: relative; }
+      [data-testid="nav-glass-indicator"] { z-index: 0; border: 1px solid rgba(190,255,216,.34); background: linear-gradient(135deg, rgba(202,255,222,.25), rgba(112,180,139,.13) 48%, rgba(255,255,255,.07)); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), inset 0 -1px 0 rgba(130,231,168,.1), 0 7px 24px rgba(0,0,0,.18); -webkit-backdrop-filter: blur(15px) saturate(155%); backdrop-filter: blur(15px) saturate(155%); will-change: left, top, width, height, border-radius, transform; transition: left 520ms cubic-bezier(.2,.82,.25,1), top 520ms cubic-bezier(.2,.82,.25,1), width 520ms cubic-bezier(.2,.82,.25,1), height 520ms cubic-bezier(.2,.82,.25,1); }
+      [data-testid="nav-track"].nav-liquid-morph [data-testid="nav-glass-indicator"] { animation: nav-glass-morph 680ms cubic-bezier(.2,.8,.25,1) both; }
+      @keyframes nav-glass-morph { 0% { border-radius: 999px; transform: scale(1,1); } 24% { border-radius: 42% 58% 50% 50% / 55% 44% 56% 45%; transform: scale(1.14,.78); } 52% { border-radius: 58% 42% 46% 54% / 43% 57% 43% 57%; transform: scale(.96,1.12); } 76% { border-radius: 999px; transform: scale(1.035,.97); } 100% { border-radius: 999px; transform: scale(1,1); } }
+      [data-testid="brand-glass"], [data-testid="register-glass"] { border: 1px solid rgba(190,255,216,.28); background: linear-gradient(135deg, rgba(202,255,222,.13), rgba(112,180,139,.07) 54%, rgba(255,255,255,.035)); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -1px 0 rgba(130,231,168,.08), 0 6px 20px rgba(0,0,0,.14); -webkit-backdrop-filter: blur(14px) saturate(150%); backdrop-filter: blur(14px) saturate(150%); }
+      @media (prefers-reduced-motion: reduce) { [data-testid="torch-block"], [data-testid="nav-glass-indicator"] { transition: none !important; } [data-testid="nav-track"].nav-liquid-morph [data-testid="nav-glass-indicator"] { animation: none !important; } }
     `;
     document.head.appendChild(style);
     const move = (event: PointerEvent) => {
@@ -674,6 +681,35 @@ export default function App() {
     document.addEventListener('pointerout', leave);
     return () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerdown', down); document.removeEventListener('pointerup', release); document.removeEventListener('pointercancel', release); document.removeEventListener('pointerout', leave); style.remove(); };
   }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const changed = previousNavId.current !== activeNavId;
+    previousNavId.current = activeNavId;
+    const tracks = [...document.querySelectorAll<HTMLElement>('[data-testid="nav-track"]')];
+    const update = () => tracks.forEach((track) => {
+      const activeItem = track.querySelector<HTMLElement>(`[data-testid="nav-item-${activeNavId}"]`);
+      const indicator = track.querySelector<HTMLElement>('[data-testid="nav-glass-indicator"]');
+      if (!activeItem || !indicator) return;
+      const trackRect = track.getBoundingClientRect();
+      const itemRect = activeItem.getBoundingClientRect();
+      indicator.style.left = `${itemRect.left - trackRect.left}px`;
+      indicator.style.top = `${itemRect.top - trackRect.top}px`;
+      indicator.style.width = `${itemRect.width}px`;
+      indicator.style.height = `${itemRect.height}px`;
+    });
+    if (changed) tracks.forEach((track) => {
+      track.classList.remove('nav-liquid-morph');
+      void track.offsetWidth;
+      track.classList.add('nav-liquid-morph');
+      window.setTimeout(() => track.classList.remove('nav-liquid-morph'), 720);
+    });
+    const frame = window.requestAnimationFrame(update);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    tracks.forEach((track) => observer?.observe(track));
+    window.addEventListener('resize', update);
+    return () => { window.cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener('resize', update); };
+  }, [activeNavId, width]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || !('IntersectionObserver' in window)) return;
@@ -1046,22 +1082,23 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const navItems = [
     { id: 'home' as const, icon: '⌂', label: 'Home' },
-    { id: 'modes' as const, icon: '◉', label: 'Lock in' },
+    { id: 'modes' as const, icon: '◉', label: 'Review' },
     { id: 'import' as const, icon: '▤', label: 'Materials' },
     { id: 'insights' as const, icon: '◴', label: 'Progress' },
   ];
 
-  const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto' }]}>
+  const brand = <Pressable testID="brand-glass" accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(190,255,216,0.28)', backgroundColor: 'rgba(202,255,222,0.08)' }]}>
     <Svg accessibilityElementsHidden width={42} height={38} viewBox="0 0 44 40" fill="none">
       <Path d="M4 7.5C10.2 4.4 16.2 5.7 22 9.3C27.8 5.7 33.8 4.4 40 7.5V32.1C33.7 29.1 27.7 30.1 22 34C16.3 30.1 10.3 29.1 4 32.1V7.5Z" stroke="#94dfa9" strokeWidth={2.3} strokeLinejoin="round" />
       <Path d="M22 9.7V33.3" stroke="#94dfa9" strokeWidth={2} strokeLinecap="round" />
       <Path d="M8.5 20C12.2 13.8 16.6 14 22 20C27.4 26 31.8 26.2 35.5 20C31.8 13.8 27.4 14 22 20C16.6 26 12.2 26.2 8.5 20Z" stroke="#e9d77b" strokeWidth={2.35} strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
-    <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.7 }}>Recall Loop</Text>
+    <Text style={{ color: '#f4fff7', fontSize: 20, fontWeight: '800', letterSpacing: -0.7, textShadowColor: 'rgba(211,255,224,0.30)', textShadowRadius: 9, textShadowOffset: { width: 0, height: 0 } }}>Recall Loop</Text>
   </Pressable>
-  const registerButton = <Pressable accessibilityRole="button" style={{ minHeight: 44, paddingVertical: 10, paddingHorizontal: 18, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(210,235,227,0.20)', backgroundColor: 'rgba(5,16,12,0.94)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
-  const pinnedNav = <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
-    {navItems.map((item) => <Pressable key={item.id} onPress={() => setPage(item.id)} style={{ minHeight: 42, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 18, backgroundColor: page === item.id ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: page === item.id ? 'rgba(90,210,141,0.28)' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: page === item.id ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>)}
+  const registerButton = <Pressable testID="register-glass" accessibilityRole="button" style={{ minHeight: 44, paddingVertical: 10, paddingHorizontal: 18, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(190,255,216,0.28)', backgroundColor: 'rgba(202,255,222,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.ink, fontWeight: '700', fontSize: 13 }}>Register</Text></Pressable>;
+  const pinnedNav = <View testID="nav-track" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
+    <View testID="nav-glass-indicator" pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: 0, height: 0, borderRadius: 24 }} />
+    {navItems.map((item) => { const active = activeNavId === item.id; return <Pressable key={item.id} testID={`nav-item-${item.id}`} onPress={() => setPage(item.id)} style={{ zIndex: 1, minHeight: 42, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 18, backgroundColor: Platform.OS === 'web' ? 'transparent' : active ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: Platform.OS !== 'web' && active ? 'rgba(90,210,141,0.28)' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: active ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>; })}
   </View>;
   const fixedHeader = <View style={[styles.header, { minHeight: compact ? 116 : 78, flexWrap: 'wrap', gap: compact ? 7 : 12, paddingTop: compact ? 6 : 0, paddingBottom: compact ? 8 : 0 }]}>
     {brand}
@@ -1073,9 +1110,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   </View>;
 
   const paceOptions: { id: Pace; icon: string; title: string; time: string; description: string; steps: string }[] = [
-    { id: 'cram', icon: '⚡︎', title: 'Cram', time: '10 min', description: 'Find the gap fast. Test first, jump straight to the source, and retry what you missed.', steps: 'Quick recall · One key source · Retry' },
-    { id: 'steady', icon: '↗', title: 'Steady', time: '20 min', description: 'Work through your questions in a repeatable recall → review → retry loop.', steps: 'Recall · Focused reading · All questions' },
-    { id: 'deep', icon: '◎', title: 'Deep', time: '35 min', description: 'Read the full module first, then check recall and work through every question.', steps: 'Full module · Recall · Follow-up' },
+    { id: 'cram', icon: '⚡︎', title: 'Cram', time: '10 min', description: 'Find gaps fast. Review one source, then retry.', steps: 'Recall · One source · Retry' },
+    { id: 'steady', icon: '↗', title: 'Steady', time: '20 min', description: 'Recall first, then review all questions.', steps: 'Recall · Focused review' },
+    { id: 'deep', icon: '◎', title: 'Deep', time: '35 min', description: 'Read the module, then test your recall.', steps: 'Full module · Recall · Follow-up' },
   ];
   const selectedOption = paceOptions.find((option) => option.id === selectedPace)!;
   const flowSteps = [
@@ -1115,7 +1152,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   </View>;
 
   const lockInScreen = <View style={[styles.content, { width: '100%', maxWidth: 1120, alignSelf: 'center', alignItems: 'center' }]}>
-    <View style={{ width: '100%', maxWidth: 760, alignItems: 'center', gap: 8 }}><Text style={[styles.label, { color: '#8fcba6', textAlign: 'center' }]}>LOCK IN · PICK YOUR PACE</Text><Text style={[styles.title, { marginTop: 2, textAlign: 'center' }]}>How much time do you have?</Text><Text style={[styles.body, { textAlign: 'center' }]}>Choose a session style. Recall Loop will guide you through the right amount of recall, source review, and retry.</Text></View>
+    <View style={{ width: '100%', maxWidth: 760, alignItems: 'center', gap: 8 }}><Text style={[styles.label, { color: '#8fcba6', textAlign: 'center' }]}>REVIEW MODE</Text><Text style={[styles.title, { marginTop: 2, textAlign: 'center' }]}>Choose a session style</Text><Text style={[styles.body, { textAlign: 'center' }]}>Pick the pace that fits your time and focus.</Text></View>
     <View style={[styles.row, { width: '100%', justifyContent: 'center' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 360, minHeight: compact ? 215 : 255, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text><Text style={{ color: active ? '#b8e8c7' : '#85948e', fontSize: 11, lineHeight: 17, fontWeight: '700' }}>{option.steps}</Text></Pressable>; })}</View>
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap', marginTop: 2 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open Materials'}</Text></Pressable></View>
     <Text style={[styles.small, { textAlign: 'center' }]}>{hasStudyContent ? `${displayModuleTitle} · ${questionList.length} questions · ${linkedCount} source links to verify` : 'Add notes and questions in Materials before starting a session.'}</Text>
