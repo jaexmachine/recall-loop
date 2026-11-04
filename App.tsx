@@ -26,7 +26,7 @@ type StudyFile = { id: string; name: string; text: string; segments?: StudySegme
 type OriginalDocument = { id: string; name: string; type: string; blob: Blob };
 type SourceReader = { title: string; location: string; text: string };
 type Subject = { id: string; name: string; notes: string; questionsText: string; files: StudyFile[] };
-type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; sourceScope: 'subject' | 'file' | 'notes' };
+type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; selectedSourceIds?: string[]; sourceScope: 'subject' | 'file' | 'notes' | 'selected' };
 type Pace = 'cram' | 'steady' | 'deep';
 type Phase = 'module' | 'diagnostic' | 'review' | 'check';
 
@@ -560,10 +560,15 @@ export default function App() {
   const [activeSubjectId, setActiveSubjectId] = useState<string | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [materialsTab, setMaterialsTab] = useState<'sources' | 'add' | 'summary'>('sources');
+  const [addTab, setAddTab] = useState<'notes' | 'questions'>('notes');
+  const [studyFormat, setStudyFormat] = useState<'flashcards' | 'qa' | 'read'>('qa');
+  const [flashcardRevealed, setFlashcardRevealed] = useState(false);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
   const [sourceReader, setSourceReader] = useState<SourceReader | null>(null);
-  const [sourceScope, setSourceScope] = useState<'subject' | 'file' | 'notes'>('subject');
+  const [sourceScope, setSourceScope] = useState<'subject' | 'file' | 'notes' | 'selected'>('subject');
   const [newSubjectName, setNewSubjectName] = useState('');
   const [matches, setMatches] = useState<Match[]>([]);
   const [mode, setMode] = useState<'cram' | 'steady' | 'deep'>('cram');
@@ -606,7 +611,8 @@ export default function App() {
             setSubjects(loadedSubjects);
             setActiveSubjectId(typeof saved.activeSubjectId === 'string' ? saved.activeSubjectId : loadedSubjects[0].id);
             setSelectedSourceId(typeof saved.selectedSourceId === 'string' ? saved.selectedSourceId : null);
-            setSourceScope(saved.sourceScope === 'file' ? 'file' : saved.sourceScope === 'notes' ? 'notes' : 'subject');
+            setSelectedSourceIds(Array.isArray(saved.selectedSourceIds) ? saved.selectedSourceIds.filter((id): id is string => typeof id === 'string') : []);
+            setSourceScope(saved.sourceScope === 'file' ? 'file' : saved.sourceScope === 'notes' ? 'notes' : saved.sourceScope === 'selected' ? 'selected' : 'subject');
           } else if (saved.notes.trim() || saved.questionsText.trim()) {
             const migrated: Subject = { id: 'subject-migrated', name: 'My study materials', notes: saved.notes, questionsText: saved.questionsText, files: [] };
             setSubjects([migrated]); setActiveSubjectId(migrated.id);
@@ -624,12 +630,12 @@ export default function App() {
     if (Platform.OS !== 'web' || !storageReady) return;
     try {
       const savedSubjects = subjects.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject);
-      const saved: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: savedSubjects, activeSubjectId, selectedSourceId, sourceScope };
+      const saved: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: savedSubjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope };
       window.localStorage.setItem(storageKey, JSON.stringify(saved));
     } catch {
       setNotice('Browser storage is full or unavailable. Remove a large file or shorten your materials, then try again.');
     }
-  }, [storageReady, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects, activeSubjectId, selectedSourceId, sourceScope]);
+  }, [storageReady, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -735,6 +741,7 @@ export default function App() {
   const activeSubject = subjects.find((subject) => subject.id === activeSubjectId) || null;
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
   const fileSegments = (file: StudyFile) => (file.segments?.length ? file.segments : asStudySegments(file.text, file.name)).map((segment) => ({ ...segment, sourceFileId: file.id }));
+  const selectedStudyFiles = activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)) || [];
   const lecturePreview = (file: StudyFile) => {
     const slides = fileSegments(file);
     const slideIndex = Math.min(previewSlideIndex, Math.max(0, slides.length - 1));
@@ -766,11 +773,13 @@ export default function App() {
       {slideSuggestion && <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><Text style={[styles.body, { flex: 1, color: '#dfe9e3' }]}>Draft: {slideSuggestion}</Text><ActionButton compact secondary label={questionList.includes(slideSuggestion) ? 'Already added' : 'Add question'} onPress={addSuggestedQuestion} /></View>}
     </View>;
   };
-  const studySourceText = sourceScope === 'file' && selectedSource ? selectedSource.text : sourceScope === 'notes' ? notes : [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.text) || [])].filter(Boolean).join('\n\n');
+  const studySourceText = sourceScope === 'file' && selectedSource ? selectedSource.text : sourceScope === 'notes' ? notes : sourceScope === 'selected' ? [selectedSourceIds.includes('__notes__') ? notes : '', ...selectedStudyFiles.map((file) => file.text)].filter(Boolean).join('\n\n') : [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.text) || [])].filter(Boolean).join('\n\n');
   const studySourceSegments = sourceScope === 'file' && selectedSource
     ? fileSegments(selectedSource)
     : sourceScope === 'notes'
       ? asStudySegments(notes)
+      : sourceScope === 'selected'
+        ? [...(selectedSourceIds.includes('__notes__') ? asStudySegments(notes) : []), ...selectedStudyFiles.flatMap(fileSegments)]
       : [...asStudySegments(notes), ...(activeSubject?.files.filter((file) => file.role === 'source').flatMap(fileSegments) || [])];
   const questionList = useMemo(() => splitQuestions(questionsText), [questionsText]);
   const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
@@ -887,7 +896,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     try {
       setBackupBusy(true);
       const backupSubjects = subjects.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject);
-      const workspace: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: backupSubjects, activeSubjectId, selectedSourceId, sourceScope };
+      const workspace: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: backupSubjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope };
       const archive = new JSZip();
       const originals: { id: string; name: string; type: string }[] = [];
       let originalBytes = 0;
@@ -960,7 +969,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       setDemoMaterial(incoming.demoMaterial === true); setMatches(Array.isArray(incoming.matches) ? incoming.matches as Match[] : []);
       setAttempted(Number.isFinite(incoming.attempted) ? Number(incoming.attempted) : 0); setCorrect(Number.isFinite(incoming.correct) ? Number(incoming.correct) : 0);
       setHistory(Array.isArray(incoming.history) ? incoming.history as StudyAttempt[] : []); setSelectedSourceId(typeof incoming.selectedSourceId === 'string' ? incoming.selectedSourceId : null);
-      setSourceScope(incoming.sourceScope === 'file' || incoming.sourceScope === 'notes' ? incoming.sourceScope : 'subject');
+      setSelectedSourceIds(Array.isArray(incoming.selectedSourceIds) ? incoming.selectedSourceIds.filter((id): id is string => typeof id === 'string') : []);
+      setSourceScope(incoming.sourceScope === 'file' || incoming.sourceScope === 'notes' || incoming.sourceScope === 'selected' ? incoming.sourceScope : 'subject');
       setFolderOpen(false); setPreviewSourceId(null); setSourceReader(null); setConfirmRestoreBackup(false); setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
       notify(`Restored ${restoredSubjects.length} folder${restoredSubjects.length === 1 ? '' : 's'} and ${originals.length} original file${originals.length === 1 ? '' : 's'}.`);
     } catch (error) {
@@ -975,7 +985,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!name) { notify('Enter a subject name, such as Physics.'); return; }
     const created: Subject = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, notes: '', questionsText: '', files: [] };
     setSubjects((previous) => [...previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject), created]);
-    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setDemoMaterial(false); setNewSubjectName('');
+    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false); setNewSubjectName('');
     notify(`${name} is ready. Add notes or upload source files to this subject.`);
   };
 
@@ -984,7 +994,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!next) return;
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject));
     setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([...asStudySegments(next.notes), ...next.files.filter((file) => file.role === 'source').flatMap(fileSegments)], splitQuestions(next.questionsText)));
-    setSelectedSourceId(null); setPreviewSourceId(null); setSourceScope('subject'); setDemoMaterial(false);
+    setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false);
   };
 
   const openSubject = (id: string) => {
@@ -994,6 +1004,31 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const setSourceToFile = (file: StudyFile) => {
     setSelectedSourceId(file.id); setSourceScope('file'); setMatches(buildMatches(fileSegments(file), questionList));
+  };
+
+  const toggleStudySource = (sourceId: string) => {
+    const nextIds = selectedSourceIds.includes(sourceId) ? selectedSourceIds.filter((id) => id !== sourceId) : [...selectedSourceIds, sourceId];
+    const nextSegments = [...(nextIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && nextIds.includes(file.id)).flatMap(fileSegments) || [])];
+    setSelectedSourceIds(nextIds); setSelectedSourceId(null); setSourceScope('selected'); setMatches(buildMatches(nextSegments, questionList));
+  };
+
+  const selectAllStudySources = () => {
+    const allIds = [...(notes.trim() ? ['__notes__'] : []), ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.id) || [])];
+    const nextIds = allIds.length && allIds.every((id) => selectedSourceIds.includes(id)) ? [] : allIds;
+    const nextSegments = [...(nextIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && nextIds.includes(file.id)).flatMap(fileSegments) || [])];
+    setSelectedSourceIds(nextIds); setSelectedSourceId(null); setSourceScope('selected'); setMatches(buildMatches(nextSegments, questionList));
+  };
+
+  const beginStudyFormat = (format: 'flashcards' | 'qa' | 'read') => {
+    if (!selectedSourceIds.length) { notify('Select at least one source to study.'); return; }
+    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false);
+    const sourceSegments = [...(selectedSourceIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)).flatMap(fileSegments) || [])];
+    const sessionQuestions = questionList.length ? questionList : format === 'read' ? [] : draftPracticeQuestions(sourceSegments.map((segment) => segment.text).join('\n\n'));
+    if (!questionList.length && format !== 'read' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+    setMatches(buildMatches(sourceSegments, sessionQuestions));
+    if (format !== 'read' && !sessionQuestions.length) { notify('Add some questions or clearer source notes before starting practice.'); return; }
+    if (format === 'qa') { startStudy(selectedPace); return; }
+    setMode(selectedPace); setQuestionIndex(0); setPhase(format === 'read' ? 'module' : 'diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('study');
   };
 
   const activateSubjectFile = (file: StudyFile) => {
@@ -1012,6 +1047,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (Platform.OS === 'web') void deleteOriginalDocument(fileId).catch(() => undefined);
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
     if (previewSourceId === fileId) setPreviewSourceId(null);
+    setSelectedSourceIds((previous) => previous.filter((id) => id !== fileId));
     if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([...asStudySegments(notes), ...updatedFiles.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }
   };
 
@@ -1035,7 +1071,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const clearWorkspace = () => {
-    setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]);
+    setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]); setSelectedSourceIds([]);
     setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setPreviewSourceId(null); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
     if (Platform.OS === 'web') void clearOriginalDocuments().catch(() => undefined);
     setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
@@ -1164,38 +1200,35 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
     {!folderOpen ? <View style={{ gap: 16 }}>
       <View testID="torch-block" style={[styles.card, { gap: 14 }]}>
-        <View><Text style={styles.label}>STEP 01 · SUBJECT FOLDERS</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 5 }}>Create a subject folder</Text></View>
+        <View><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800' }}>Create a subject folder</Text></View>
         <View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap', alignItems: 'center' }}><TextInput value={newSubjectName} onChangeText={setNewSubjectName} placeholder="e.g. Physics" placeholderTextColor="#9ba6ad" accessibilityLabel="New subject folder name" style={[styles.input, { minHeight: 45, flex: 1, minWidth: 210 }]} onSubmitEditing={createSubject} /><ActionButton label="Create folder" onPress={createSubject} /></View>
       </View>
       {!!subjects.length && <View style={{ gap: 12 }}><Text style={styles.label}>FOLDERS · {subjects.length}</Text><View style={styles.row}>{subjects.map((subject) => <Pressable key={subject.id} accessibilityRole="button" accessibilityLabel={`Open ${subject.name} folder`} onPress={() => openSubject(subject.id)} testID="torch-block" style={[styles.card, { flex: 1, minWidth: 220, maxWidth: 330, minHeight: 144, gap: 10, padding: 17, alignItems: 'flex-start', justifyContent: 'space-between' }]}><View style={{ gap: 8 }}><View style={{ width: 31, height: 23, borderRadius: 5, backgroundColor: 'rgba(245,216,94,0.18)', borderWidth: 1, borderColor: 'rgba(245,216,94,0.38)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: palette.yellow, fontSize: 12, fontWeight: '900' }}>▰</Text></View><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800' }}>{subject.name}</Text><Text style={styles.small}>{subject.files.length} {subject.files.length === 1 ? 'file' : 'files'}</Text></View><Text style={{ color: '#9fe1b5', fontSize: 12, fontWeight: '800' }}>Open folder →</Text></Pressable>)}</View></View>}
     </View> : activeSubject ? <View style={{ gap: 16 }}>
       <Pressable onPress={() => { setFolderOpen(false); setConfirmClear(false); }} style={{ alignSelf: 'flex-start', paddingVertical: 5, paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>← All subject folders</Text></Pressable>
-      <View style={styles.row}>
-        <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
-          <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 02 · SOURCE NOTES & FILES</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>Subject notes</Text></View><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View>
-          <TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste notes for this subject…" placeholderTextColor="#9ba6ad" style={styles.input} />
-        </View>
-        <View testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, minWidth: compact ? 0 : 290, width: compact ? '100%' : undefined, maxWidth: compact ? '100%' : undefined, gap: 12 }]}>
-          <View style={{ flexDirection: 'column', gap: 10, alignItems: 'flex-start', width: '100%' }}><View><Text style={styles.label}>STEP 03 · FORMATIVE QUESTIONS</Text><Text style={{ fontSize: 17, color: palette.ink, fontWeight: '800', marginTop: 5 }}>What you were asked</Text></View><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View>
-          <TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="One question per line…" placeholderTextColor="#9ba6ad" style={styles.input} />
-        </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, borderBottomWidth: 1, borderColor: palette.line, paddingBottom: 10 }}>
+        {([['sources', 'Sources'], ['add', 'Add'], ['summary', 'AI Summary']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: materialsTab === id }} onPress={() => setMaterialsTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 20, backgroundColor: materialsTab === id ? 'rgba(33,129,91,0.35)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: materialsTab === id ? 'rgba(90,210,141,0.35)' : 'transparent' }}><Text style={{ color: materialsTab === id ? '#eaffef' : '#b9c5c0', fontWeight: '800' }}>{label}</Text></Pressable>)}
       </View>
-      <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 04 · STUDY SCOPE · {activeSubject.name.toUpperCase()}</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Choose what to study</Text></View><View style={{ flexDirection: 'row', gap: 7, flexWrap: 'wrap' }}><ActionButton compact secondary label="Whole subject" onPress={() => { setSourceScope('subject'); setSelectedSourceId(null); setMatches(buildMatches([...asStudySegments(notes), ...activeSubject.files.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }} />{!!notes.trim() && <ActionButton compact secondary label="Notes only" onPress={() => { setSourceScope('notes'); setSelectedSourceId(null); setMatches(buildMatches(asStudySegments(notes), questionList)); }} />}{selectedSource && <ActionButton compact secondary label="Selected file" onPress={() => setSourceToFile(selectedSource)} />}</View></View>
-        {!!activeSubject.files.length ? activeSubject.files.map((file) => <View key={file.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 9, gap: 8 }}>
-          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9 }}><View style={{ flex: 1, minWidth: compact ? 0 : 120, paddingVertical: 5 }}><Text style={{ color: file.id === selectedSourceId ? '#d9ffe2' : palette.ink, fontWeight: '700' }}>{file.id === selectedSourceId ? '● ' : ''}{file.name}</Text><Text style={styles.small}>{file.role === 'source' ? 'Source material' : 'Formative questions'}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}><ActionButton compact secondary label={file.role === 'source' ? (previewSourceId === file.id ? 'Hide preview' : 'Preview & select') : 'Load questions'} onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, minWidth: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: palette.muted, fontWeight: '800' }}>Remove</Text></Pressable></View></View>
-          {file.role === 'source' && previewSourceId === file.id && <View style={{ borderRadius: 10, borderWidth: 1, borderColor: palette.line, padding: 12, backgroundColor: 'rgba(5,14,11,0.42)', gap: 9 }}><Text style={styles.label}>ORIGINAL LECTURE PAGE · QUESTION-LINKED HIGHLIGHTS</Text>{lecturePreview(file)}<Text style={styles.small}>The original page is rendered in this browser. Yellow marks words connected to your questions; slide and page text stay on this device.</Text></View>}
-        </View>) : <Text style={styles.small}>No files in this folder yet.</Text>}
-      </View>
-      <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><ActionButton label={busy ? 'Reading file…' : 'STEP 05 · Match questions to source'} onPress={matchQuestions} /><ActionButton label="Draft questions from source" secondary onPress={generateQuestions} /><ActionButton label="Clear workspace" secondary onPress={() => setConfirmClear(true)} /></View>
-      {confirmClear && <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: 'rgba(245,216,94,0.4)', borderRadius: 13, padding: 13, backgroundColor: 'rgba(245,216,94,0.06)' }}><Text style={[styles.body, { flex: 1, minWidth: 220, color: '#fff2ad' }]}>Are you sure? This deletes all subject folders, uploaded text, questions, and progress saved in this browser.</Text><ActionButton compact secondary label="Cancel" onPress={() => setConfirmClear(false)} /><ActionButton compact label="Yes, clear everything" onPress={() => { clearWorkspace(); setConfirmClear(false); }} /></View>}
-      <Text style={styles.small}>Prototype analysis runs locally in your browser: it ranks source sentences, drafts recall prompts, and links questions to matching passages. It is not a connected AI model yet. Scanned PDFs need OCR.</Text>
-      <View testID="torch-block" style={[styles.card, { gap: 14 }]}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}><View><Text style={styles.label}>STEP 06 · QUESTION ANALYZER PROTOTYPE</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 5 }}>What should you study next?</Text></View><View style={{ backgroundColor: palette.yellowSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}><Text style={{ color: '#705d00', fontSize: 11, fontWeight: '800' }}>LOCAL ANALYSIS</Text></View></View>
-        {nextStudyMatch && <View style={{ borderWidth: 1, borderColor: 'rgba(90,210,141,0.28)', backgroundColor: 'rgba(33,129,91,0.13)', borderRadius: 12, padding: 13, gap: 8 }}><Text style={styles.label}>RECOMMENDED NEXT QUESTION</Text><Text style={{ color: palette.ink, fontSize: 16, lineHeight: 23, fontWeight: '800' }}>{nextStudyMatch.question}</Text><Text style={styles.small}>{nextStudyReason}</Text>{questionList.includes(nextStudyMatch.question) && <ActionButton label="Start with this question →" onPress={() => startStudy(selectedPace, questionList.indexOf(nextStudyMatch.question))} />}</View>}
-        {matches.map((match, i) => <View key={`${i}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 7 }}><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 14 }}>Q{i + 1}. {match.question}</Text><View style={{ backgroundColor: match.overlap ? 'rgba(245,216,94,0.10)' : 'rgba(255,255,255,0.04)', borderLeftWidth: match.overlap ? 3 : 1, borderLeftColor: match.overlap ? 'rgba(245,216,94,0.76)' : palette.line, borderRadius: 9, padding: 11 }}><Text style={{ color: palette.ink, fontSize: 13, lineHeight: 19 }}>{match.passage}</Text></View><Text style={styles.small}>{match.sourceLabel ? `${match.sourceLabel} · ` : ''}{match.manual ? (match.passageIndex ? 'Manual source · verify this passage' : 'Source link cleared · choose a passage or review manually') : match.overlap ? `Suggested source · ${match.overlap} shared key term${match.overlap === 1 ? '' : 's'} · please verify` : 'No automatic link · manual review needed'}</Text>{findMatchSourceFile(match) && <ActionButton compact secondary label="Open source location →" onPress={() => void openSourceLocation(match)} />}{sourceOptions.length > 0 && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary label="Previous source" onPress={() => stepMatchSource(match.question, -1)} /><ActionButton compact secondary label="Next source" onPress={() => stepMatchSource(match.question, 1)} />{match.passageIndex !== null && <ActionButton compact secondary label="Clear link" onPress={() => clearMatchSource(match.question)} />}</View>}</View>)}
-        {!matches.length && <Text style={styles.body}>Add a few questions, then match them to see suggested passages.</Text>}
-      </View>
+      {materialsTab === 'add' ? <View style={{ gap: 14 }}>
+        <Text style={[styles.body, { maxWidth: 700 }]}>Add your own notes or questions from class. Both stay in this subject folder.</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{([['notes', 'Subject notes'], ['questions', 'Questions already asked']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: addTab === id }} onPress={() => setAddTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 18, backgroundColor: addTab === id ? 'rgba(33,129,91,0.3)' : 'rgba(255,255,255,0.04)' }}><Text style={{ color: addTab === id ? '#eaffef' : palette.muted, fontWeight: '700' }}>{label}</Text></Pressable>)}</View>
+        {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View><TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary label="Draft practice questions from sources" onPress={generateQuestions} /></View>}
+      </View> : materialsTab === 'summary' ? <View testID="torch-block" style={[styles.card, { minHeight: 200, gap: 10, justifyContent: 'center' }]}><Text style={styles.label}>COMING NEXT</Text><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800' }}>AI Summary</Text><Text style={styles.body}>A source-grounded summary will appear here. This preview is intentionally static for now.</Text></View> : <View style={{ gap: 15 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}><Text style={[styles.body, { flex: 1, minWidth: 220 }]}>Add lecture files here, then choose which sources to include in your study session.</Text><ActionButton label={busy ? 'Reading file…' : 'Add source file'} onPress={() => importFile('module')} /></View>
+        {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text><Text style={styles.small}>Added notes · {notes.trim().split(/\s+/).length} words</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
+        {activeSubject.files.filter((file) => file.role === 'source').map((file) => <View key={file.id} style={[styles.card, { gap: 10, padding: 15 }]}>
+          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 10 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(file.id) }} onPress={() => toggleStudySource(file.id)} style={{ flex: 1, minWidth: 170, flexDirection: 'row', alignItems: 'center', gap: 11, minHeight: 44 }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(file.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(file.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(file.id) ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Source material · {file.text.trim().split(/\s+/).length} words</Text></View></Pressable><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}><ActionButton compact secondary label={previewSourceId === file.id ? 'Hide preview' : 'Preview'} onPress={() => { setPreviewSlideIndex(0); setPreviewSourceId((previous) => previous === file.id ? null : file.id); }} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View></View>
+          {previewSourceId === file.id && <View style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 10, gap: 9 }}><Text style={styles.label}>SOURCE PREVIEW</Text>{lecturePreview(file)}</View>}
+        </View>)}
+        {activeSubject.files.filter((file) => file.role === 'questions').map((file) => <View key={file.id} style={[styles.card, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: 15 }]}><View style={{ flex: 1, minWidth: 180 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Question file · {file.text.trim().split(/\s+/).length} words</Text></View><ActionButton compact secondary label="Load questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>)}
+        {!notes.trim() && !activeSubject.files.some((file) => file.role === 'source' || file.role === 'questions') && <View style={[styles.card, { alignItems: 'center', paddingVertical: 35, gap: 8 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>No sources yet</Text><Text style={[styles.body, { textAlign: 'center' }]}>Upload lecture material or add subject notes to get started.</Text></View>}
+        {(!!notes.trim() || activeSubject.files.some((file) => file.role === 'source')) && <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><View><Text style={styles.label}>STUDY SOURCES</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 4 }}>What would you like to do?</Text></View><Pressable accessibilityRole="button" onPress={selectAllStudySources} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedSourceIds.length === (activeSubject.files.filter((file) => file.role === 'source').length + (notes.trim() ? 1 : 0)) ? 'Clear selection' : 'Select all sources'}</Text></Pressable></View>
+          <Text style={styles.small}>{selectedSourceIds.length ? `${selectedSourceIds.length} source${selectedSourceIds.length === 1 ? '' : 's'} selected` : 'Select one or more sources above.'}</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Flashcard review" onPress={() => beginStudyFormat('flashcards')} /><ActionButton secondary label="Q&A practice" onPress={() => beginStudyFormat('qa')} /><ActionButton secondary label="Read sources" onPress={() => beginStudyFormat('read')} /></View>
+        </View>}
+        <View style={{ gap: 8 }}><Pressable accessibilityRole="button" onPress={matchQuestions} style={{ alignSelf: 'flex-start', minHeight: 42, justifyContent: 'center', paddingHorizontal: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>Review question-to-source matches ↓</Text></Pressable>{!!matches.length && <View style={[styles.card, { gap: 10 }]}><Text style={styles.label}>QUESTION LINKS · CHECK BEFORE STUDYING</Text>{nextStudyMatch && <Text style={styles.body}>Suggested next: {nextStudyMatch.question} — {nextStudyReason}</Text>}{matches.slice(0, 4).map((match, index) => <View key={`${index}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 8, gap: 4 }}><Text style={{ color: palette.ink, fontWeight: '700' }}>{match.question}</Text><Text style={styles.small}>{match.sourceLabel || 'No automatic source link'}{match.overlap ? ` · ${match.overlap} shared terms · verify this match` : ''}</Text></View>)}</View>}</View>
+      </View>}
     </View> : null}
   </View>;
 
@@ -1205,7 +1238,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const studyScreen = <View style={styles.content}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}><View><Text style={styles.label}>{mode.toUpperCase()} MODE · {displayModuleTitle.toUpperCase()}</Text><Text style={[styles.title, { marginTop: 7 }]}>{phase === 'module' ? 'Read the full module' : phase === 'diagnostic' ? 'Quick diagnostic' : phase === 'review' ? 'Targeted review' : 'Check what stuck'}</Text></View><ActionButton label="Exit session" secondary onPress={() => setPage('home')} /></View>
     <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>{Array.from({ length: phaseTotal }, (_, index) => <View key={index} style={{ height: 6, flex: 1, backgroundColor: index < phaseStep ? (index + 1 === phaseStep ? palette.yellow : palette.green) : palette.line, borderRadius: 5 }} />)}<Text style={styles.small}>{phaseStep} of {phaseTotal} · {phaseDescription}</Text></View>
-    {phase === 'review' || phase === 'module' ? reviewPanel : quizPanel}
+    {studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file) => <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>{file.name}</Text>{lecturePreview(file)}<Text style={styles.label}>EXTRACTED MATERIAL</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found. Use the original page preview above.'}</Text></View>)}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, questionList.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{questionList[questionIndex] || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: 15, gap: 8 }}><Text style={styles.label}>SOURCE TO CHECK</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 24 }}>{matches.find((match) => match.question === questionList[questionIndex])?.passage || sourceParagraphs[questionIndex % Math.max(sourceParagraphs.length, 1)]?.text || 'Review the selected source and write the answer in your own words.'}</Text></View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < questionList.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < questionList.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else setFlashcardRevealed(true); }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'review' || phase === 'module' ? reviewPanel : quizPanel}
   </View>;
 
   const readyCount = history.filter((attempt) => attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready').length;
@@ -1213,12 +1246,13 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const insightsScreen = <View style={styles.content}>
     <View><Text style={styles.label}>LEARN FROM YOUR SESSIONS</Text><Text style={[styles.title, { marginTop: 7 }]}>Progress, with context</Text><Text style={[styles.body, { marginTop: 7, maxWidth: 700 }]}>Your attempts are stored on this browser. Demo answers are scored against the key; answers to your own materials are tracked by your self-rating.</Text></View>
     <View testID="torch-block" style={[styles.card, { gap: 11 }]}><Text style={styles.label}>WORKSPACE BACKUP</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>Keep a copy of your study space</Text><Text style={styles.body}>Download folders, notes, questions, progress, and saved original files as a private ZIP. Restore it in another browser to move your workspace.</Text><View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap' }}><ActionButton label={backupBusy ? 'Preparing backup…' : 'Download backup'} onPress={() => void exportWorkspaceBackup()} /><ActionButton secondary label="Restore from backup" onPress={() => setConfirmRestoreBackup(true)} /></View>{confirmRestoreBackup && <View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(245,216,94,0.4)', borderRadius: 12, padding: 12, backgroundColor: 'rgba(245,216,94,0.06)' }}><Text style={[styles.small, { flex: 1, minWidth: 220, color: '#fff2ad' }]}>Restoring replaces the folders and progress in this browser. Choose a Recall Loop ZIP backup to continue.</Text><ActionButton compact secondary label="Cancel" onPress={() => setConfirmRestoreBackup(false)} /><ActionButton compact label="Choose backup…" onPress={() => void restoreWorkspaceBackup()} /></View>}</View>
+    <View testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={styles.label}>WORKSPACE SETTINGS</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>Clear workspace</Text><Text style={styles.body}>Delete all folders, source files, questions, and saved progress from this browser.</Text><ActionButton secondary label="Clear workspace…" onPress={() => setConfirmClear(true)} />{confirmClear && <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: 'rgba(245,216,94,0.4)', borderRadius: 13, padding: 13, backgroundColor: 'rgba(245,216,94,0.06)' }}><Text style={[styles.body, { flex: 1, minWidth: 220, color: '#fff2ad' }]}>Are you sure? This cannot be undone.</Text><ActionButton compact secondary label="Cancel" onPress={() => setConfirmClear(false)} /><ActionButton compact label="Yes, clear everything" onPress={() => { clearWorkspace(); setConfirmClear(false); }} /></View>}</View>
     <View style={styles.row}>{[
       { label: 'TOTAL ATTEMPTS', value: String(attempted), note: 'saved in this workspace', tone: palette.blueSoft },
       { label: 'READY / CORRECT', value: String(readyCount), note: 'demo score or your self-rating', tone: palette.greenSoft },
       { label: 'NEEDS REVIEW', value: String(reviewCount), note: 'missed or marked uncertain', tone: palette.yellowSoft },
     ].map((card) => <View key={card.label} testID="torch-block" style={[styles.card, { flex: 1, minWidth: 190 }]}><Text style={styles.label}>{card.label}</Text><Text style={{ color: palette.ink, fontSize: 32, fontWeight: '900', marginTop: 13 }}>{card.value}</Text><Text style={[styles.small, { marginTop: 4 }]}>{card.note}</Text><View style={{ height: 5, backgroundColor: card.tone, borderRadius: 4, marginTop: 14 }} /></View>)}</View>
-    <View testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={styles.label}>WHAT TO REVIEW NEXT</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>{reviewCount ? 'Revisit the questions you marked for review' : 'Keep building your recall history'}</Text><Text style={styles.body}>{reviewCount ? `You have ${reviewCount} item${reviewCount === 1 ? '' : 's'} marked uncertain or missed. Start a session to retrieve them again and open their source passages.` : 'Once you answer a few questions, this page will surface your misses and self-rated uncertain topics here.'}</Text><ActionButton label="Return to study" onPress={startStudy} /></View>
+    <View testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={styles.label}>WHAT TO REVIEW NEXT</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>{reviewCount ? 'Revisit the questions you marked for review' : 'Keep building your recall history'}</Text><Text style={styles.body}>{reviewCount ? `You have ${reviewCount} item${reviewCount === 1 ? '' : 's'} marked uncertain or missed. Start a session to retrieve them again and open their source passages.` : 'Once you answer a few questions, this page will surface your misses and self-rated uncertain topics here.'}</Text><ActionButton label={hasStudyContent ? 'Choose study mode' : 'Add study materials'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} /></View>
     <View testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={styles.label}>RECENT RECALLS</Text>{history.length ? history.slice(0, 8).map((attempt) => { const positive = attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready'; const status = attempt.outcome === 'correct' ? 'Correct' : attempt.outcome === 'missed' ? 'Review' : attempt.outcome === 'self-rated-ready' ? 'Self-rated ready' : 'Needs review'; return <View key={attempt.id} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 10, gap: 4 }}><Text style={{ color: palette.ink, fontSize: 13, fontWeight: '700' }}>{attempt.question}</Text><Text style={[styles.small, { color: positive ? '#9fe1b5' : '#ffe49a' }]}>{status} · {attempt.mode} · {new Date(attempt.createdAt).toLocaleString()}</Text></View>; }) : <Text style={styles.body}>No answers yet. Your attempts will appear here after your first session.</Text>}</View>
   </View>;
 
