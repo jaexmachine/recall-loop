@@ -563,6 +563,8 @@ export default function App() {
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [materialsTab, setMaterialsTab] = useState<'sources' | 'add' | 'summary'>('sources');
   const [addTab, setAddTab] = useState<'notes' | 'questions'>('notes');
+  const [showMatchReview, setShowMatchReview] = useState(false);
+  const [expandedMatchIndex, setExpandedMatchIndex] = useState<number | null>(null);
   const [studyFormat, setStudyFormat] = useState<'flashcards' | 'qa' | 'read'>('qa');
   const [flashcardRevealed, setFlashcardRevealed] = useState(false);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
@@ -1050,7 +1052,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const matchQuestions = () => {
     const next = buildMatches(studySourceSegments, questionList);
     setMatches(next);
-    setPage('import');
+    setShowMatchReview(true);
   };
 
   const generateQuestions = () => {
@@ -1223,7 +1225,17 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
           <Text style={styles.small}>{selectedSourceIds.length ? `${selectedSourceIds.length} source${selectedSourceIds.length === 1 ? '' : 's'} selected` : 'Select one or more sources above.'}</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Flashcard review" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('flashcards')} /><ActionButton secondary label="Q&A practice" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('qa')} /><ActionButton secondary label="Read sources" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('read')} /></View>
         </View>}
-        <View style={{ gap: 8 }}><Pressable accessibilityRole="button" onPress={matchQuestions} style={{ alignSelf: 'flex-start', minHeight: 42, justifyContent: 'center', paddingHorizontal: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>Review question-to-source matches ↓</Text></Pressable>{!!matches.length && <View style={[styles.card, { gap: 10 }]}><Text style={styles.label}>QUESTION LINKS · CHECK BEFORE STUDYING</Text>{nextStudyMatch && <Text style={styles.body}>Suggested next: {nextStudyMatch.question} — {nextStudyReason}</Text>}{matches.slice(0, 4).map((match, index) => <View key={`${index}-${match.question}`} style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 8, gap: 4 }}><Text style={{ color: palette.ink, fontWeight: '700' }}>{match.question}</Text><Text style={styles.small}>{match.sourceLabel || 'No automatic source link'}{match.overlap ? ` · ${match.overlap} shared terms · verify this match` : ''}</Text></View>)}</View>}</View>
+        {!!questionList.length && <View style={{ gap: 9 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showMatchReview }} onPress={() => { if (!matches.length) matchQuestions(); else setShowMatchReview((open) => !open); }} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, gap: 8 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>Question-to-source review</Text><Text style={styles.small}>{matches.length || questionList.length} questions</Text><Text style={{ color: palette.muted }}>{showMatchReview ? '⌃' : '⌄'}</Text></Pressable><ActionButton compact secondary label="Refresh matches" onPress={matchQuestions} /></View>
+          {showMatchReview && !!matches.length && <View style={[styles.card, { gap: 10, padding: compact ? 13 : 18 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}><View><Text style={styles.label}>SUGGESTED LINKS</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 3 }}>Check each source before studying</Text></View><Text style={styles.small}>{matches.filter((match) => match.overlap > 0 || match.manual).length} linked · {matches.filter((match) => !match.overlap && !match.manual).length} need review</Text></View>
+            {matches.map((match, index) => { const expanded = expandedMatchIndex === index; const status = match.manual ? (match.passageIndex ? 'Manual link' : 'Needs review') : match.overlap ? `Suggested · ${match.overlap} shared terms` : 'Needs review'; const sourceFile = findMatchSourceFile(match); return <View key={`${index}-${match.question}`} style={{ borderWidth: 1, borderColor: expanded ? 'rgba(90,210,141,0.34)' : palette.line, borderRadius: 12, padding: 12, gap: 8, backgroundColor: expanded ? 'rgba(18,43,30,0.58)' : 'rgba(5,14,11,0.22)' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}><View style={{ width: 25, height: 25, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(245,216,94,0.13)' }}><Text style={{ color: palette.yellow, fontSize: 11, fontWeight: '900' }}>{index + 1}</Text></View><View style={{ flex: 1, minWidth: 0, gap: 5 }}><Text numberOfLines={expanded ? undefined : 2} style={{ color: palette.ink, fontWeight: '700', fontSize: 14, lineHeight: 20 }}>{match.question}</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}><Text style={{ color: match.overlap || match.manual ? '#a9e6ba' : '#ffe49a', fontSize: 11, fontWeight: '800' }}>{status}</Text><Text style={styles.small}>· {match.sourceLabel || 'No source selected'}</Text></View></View></View>
+              {expanded && <><View style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(255,255,255,0.035)' }}><Text numberOfLines={5} style={{ color: palette.ink, fontSize: 13, lineHeight: 20 }}>{match.passage}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>{sourceFile && <ActionButton compact secondary label="Open source" onPress={() => void openSourceLocation(match)} />}{sourceOptions.length > 0 && <><ActionButton compact secondary label="Previous passage" onPress={() => stepMatchSource(match.question, -1)} /><ActionButton compact secondary label="Next passage" onPress={() => stepMatchSource(match.question, 1)} /></>}{(match.passageIndex !== null || match.manual) && <Pressable accessibilityRole="button" onPress={() => clearMatchSource(match.question)} style={{ minHeight: 40, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: palette.muted, fontWeight: '700', fontSize: 12 }}>Clear link</Text></Pressable>}</View></>}
+              <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpandedMatchIndex(expanded ? null : index)} style={{ minHeight: 36, justifyContent: 'center', alignSelf: 'flex-start', paddingRight: 10 }}><Text style={{ color: '#9fe1b5', fontWeight: '800', fontSize: 12 }}>{expanded ? 'Hide passage' : 'View suggested passage'}</Text></Pressable>
+            </View>; })}
+          </View>}
+        </View>}
       </View>}
     </View> : null}
   </View>;
