@@ -29,6 +29,16 @@ type Subject = { id: string; name: string; notes: string; questionsText: string;
 type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; selectedSourceIds?: string[]; sourceScope: 'subject' | 'file' | 'notes' | 'selected' };
 type Pace = 'cram' | 'steady' | 'deep';
 type Phase = 'module' | 'diagnostic' | 'review' | 'check';
+type AiResult = { summary: string; keyPoints: string[]; vocabulary: { term: string; definition: string }[]; questions: string[]; feedback: string; assessment: 'supported' | 'partial' | 'review'; evidence: string };
+
+async function requestAI(payload: Record<string, unknown>): Promise<AiResult> {
+  const localHost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const endpoint = localHost ? 'http://127.0.0.1:3001/api/ai' : '/api/ai';
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The AI request failed. Please try again.');
+  return data.result as AiResult;
+}
 
 const storageKey = 'recall-loop.workspace.v2';
 const legacyStorageKey = 'recall-loop.workspace.v1';
@@ -584,6 +594,9 @@ export default function App() {
   const [demoMaterial, setDemoMaterial] = useState(false);
   const [answerDraft, setAnswerDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSummary, setAiSummary] = useState<{ subjectId: string; result: AiResult } | null>(null);
+  const [aiFeedback, setAiFeedback] = useState<AiResult | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmRestoreBackup, setConfirmRestoreBackup] = useState(false);
@@ -778,6 +791,7 @@ export default function App() {
     </View>;
   };
   const studySourceText = sourceScope === 'file' && selectedSource ? selectedSource.text : sourceScope === 'notes' ? notes : sourceScope === 'selected' ? [selectedSourceIds.includes('__notes__') ? notes : '', ...selectedStudyFiles.map((file) => file.text)].filter(Boolean).join('\n\n') : [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => file.text) || [])].filter(Boolean).join('\n\n');
+  const subjectSourceText = [notes, ...(activeSubject?.files.filter((file) => file.role === 'source').map((file) => `\n\n${file.name}\n${file.text}`) || [])].filter(Boolean).join('\n\n');
   const studySourceSegments = sourceScope === 'file' && selectedSource
     ? fileSegments(selectedSource)
     : sourceScope === 'notes'
@@ -789,6 +803,7 @@ export default function App() {
   const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
   const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0;
   const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : (questionList[questionIndex] || 'What is the main idea of this module?');
+  useEffect(() => { setAiFeedback(null); }, [currentQuestion]);
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
   const correctAnswer = currentDemoQuiz.correct;
   const hasNextQuestion = mode !== 'cram' && questionIndex < questionList.length - 1;
@@ -1054,17 +1069,44 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     setShowMatchReview(true);
   };
 
-  const generateQuestions = () => {
-    const drafts = draftPracticeQuestions(studySourceText);
-    if (!drafts.length) {
-      notify('No question patterns were detected. Add complete explanatory sentences or write questions manually.');
-      return;
-    }
-    const numbered = drafts.map((question, index) => `${index + 1}. ${question}`).join('\n');
-    setQuestionsText(numbered);
-    setDemoMaterial(false);
-    setMatches(buildMatches(studySourceSegments, drafts));
-    notify(`${drafts.length} practice question drafts added. They were generated locally from text patterns, so review and edit them before studying.`);
+  const generateQuestions = async () => {
+    if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
+    setAiBusy(true);
+    try {
+      const result = await requestAI({ action: 'questions', text: studySourceText, count: 8, existingQuestions: questionList.join('\n') });
+      const additions = result.questions.map((question) => question.trim()).filter((question) => question && !questionList.some((existing) => existing.toLowerCase() === question.toLowerCase()));
+      if (!additions.length) { notify('AI could not find any new questions in these sources.'); return; }
+      const updatedQuestions = [...questionList, ...additions];
+      setQuestionsText(updatedQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+      setDemoMaterial(false);
+      setMatches(buildMatches(studySourceSegments, updatedQuestions));
+      notify(`${additions.length} AI-written questions added. Review and edit them before studying.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not draft questions. Try again.');
+    } finally { setAiBusy(false); }
+  };
+
+  const generateSummary = async () => {
+    if (subjectSourceText.trim().length < 40) { notify('Add notes or a lecture source first.'); return; }
+    setAiBusy(true);
+    try {
+      const result = await requestAI({ action: 'summary', subject: activeSubject?.name || 'Study materials', text: subjectSourceText });
+      setAiSummary({ subjectId: activeSubjectId || '', result });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not summarize these sources. Try again.');
+    } finally { setAiBusy(false); }
+  };
+
+  const getAnswerFeedback = async () => {
+    if (!answerDraft.trim()) { notify('Write a short answer first.'); return; }
+    if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
+    setAiBusy(true);
+    try {
+      const result = await requestAI({ action: 'answer', text: studySourceText, question: currentQuestion, answer: answerDraft });
+      setAiFeedback(result);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not check this answer. Try again.');
+    } finally { setAiBusy(false); }
   };
 
   const clearWorkspace = () => {
@@ -1098,8 +1140,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === correctAnswer ? 'rgba(33,129,91,0.20)' : 'rgba(217,120,91,0.16)', borderWidth: 1, borderColor: answer === correctAnswer ? 'rgba(67,201,130,0.48)' : 'rgba(217,120,91,0.45)' }}><Text style={{ color: answer === correctAnswer ? '#8ce0ae' : '#f0a38d', fontWeight: '800' }}>{answer === correctAnswer ? 'Correct.' : 'Not quite — check the source passage.'}</Text><Text style={[styles.small, { marginTop: 4, color: '#c3cfca' }]}>{currentDemoQuiz.feedback[answer]}</Text></View>}
     {answer !== null && (answer !== correctAnswer ? <ActionButton label={currentMatch ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →'} onPress={() => currentMatch ? void openSourceLocation(currentMatch) : openSourcePassage()} /> : <ActionButton label={phase === 'diagnostic' ? 'Review the key passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={continueSession} />)}
   </View> : <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? 'RECALL' : 'RETRY'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text><Text style={styles.body}>Answers are self-rated, not graded.</Text>
-    <TextInput value={answerDraft} onChangeText={setAnswerDraft} multiline placeholder="Type a short answer or key points…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 90 }]} />
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton compact label="I could explain it" onPress={() => submitAnswer(1)} /><ActionButton compact secondary label="Not sure yet" onPress={() => submitAnswer(0)} /></View>
+    <TextInput value={answerDraft} onChangeText={(value) => { setAnswerDraft(value); setAiFeedback(null); }} multiline placeholder="Type a short answer or key points…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 90 }]} />
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton compact label={aiBusy ? 'Checking…' : 'Check with AI'} disabled={aiBusy} onPress={() => void getAnswerFeedback()} /><ActionButton compact secondary label="I could explain it" onPress={() => submitAnswer(1)} /><ActionButton compact secondary label="Not sure yet" onPress={() => submitAnswer(0)} /></View>
+    {aiFeedback && <View accessibilityLiveRegion="polite" style={{ padding: 13, borderRadius: 11, backgroundColor: aiFeedback.assessment === 'supported' ? 'rgba(33,129,91,0.20)' : 'rgba(245,216,94,0.1)', borderWidth: 1, borderColor: aiFeedback.assessment === 'supported' ? 'rgba(67,201,130,0.42)' : 'rgba(245,216,94,0.32)', gap: 5 }}><Text style={{ color: aiFeedback.assessment === 'supported' ? '#8ce0ae' : '#fff2ad', fontWeight: '800' }}>{aiFeedback.assessment === 'supported' ? 'Supported by your source' : aiFeedback.assessment === 'partial' ? 'Partly supported' : 'Review the source'}</Text><Text style={[styles.body, { color: '#d7e2dc' }]}>{aiFeedback.feedback}</Text>{!!aiFeedback.evidence && <Text style={styles.small}>“{aiFeedback.evidence}”</Text>}</View>}
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === 1 ? 'rgba(33,129,91,0.20)' : 'rgba(245,216,94,0.12)', borderWidth: 1, borderColor: answer === 1 ? 'rgba(67,201,130,0.42)' : 'rgba(245,216,94,0.32)' }}><Text style={{ color: answer === 1 ? '#8ce0ae' : '#fff2ad', fontWeight: '800' }}>{answer === 1 ? 'Ready' : 'Review again'}</Text></View>}
     {answer !== null && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={answer === 0 ? (currentMatch?.passageIndex ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →') : phase === 'diagnostic' ? 'Review the linked passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={answer === 0 ? (currentMatch ? () => void openSourceLocation(currentMatch) : openSourcePassage) : phase === 'diagnostic' ? openSourcePassage : continueSession} />{answer === 0 && phase === 'check' && <ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish session'} onPress={continueSession} />}</View>}
   </View>;
@@ -1197,8 +1240,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       </View>
       {materialsTab === 'add' ? <View style={{ gap: 14 }}>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{([['notes', 'Subject notes'], ['questions', 'Questions already asked']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: addTab === id }} onPress={() => setAddTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 18, backgroundColor: addTab === id ? 'rgba(33,129,91,0.3)' : 'rgba(255,255,255,0.04)' }}><Text style={{ color: addTab === id ? '#eaffef' : palette.muted, fontWeight: '700' }}>{label}</Text></Pressable>)}</View>
-        {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View><TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary label="Draft practice questions from sources" onPress={generateQuestions} /></View>}
-      </View> : materialsTab === 'summary' ? <View testID="torch-block" style={[styles.card, { minHeight: 160, gap: 10, justifyContent: 'center' }]}><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800' }}>AI Summary</Text><Text style={styles.small}>Coming soon</Text></View> : <View style={{ gap: 15 }}>
+      {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View><TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary disabled={aiBusy} label={aiBusy ? 'Writing questions…' : 'Draft practice questions with AI'} onPress={() => void generateQuestions()} /></View>}
+      </View> : materialsTab === 'summary' ? <View testID="torch-block" style={[styles.card, { gap: 14 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800' }}>AI Summary</Text><ActionButton compact disabled={aiBusy || subjectSourceText.trim().length < 40} label={aiBusy ? 'Summarizing…' : aiSummary?.subjectId === activeSubject.id ? 'Refresh summary' : 'Summarize sources'} onPress={() => void generateSummary()} /></View><Text style={styles.small}>Extracted source text is sent to OpenAI when you request AI help.</Text>{aiSummary?.subjectId === activeSubject.id ? <><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 23 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 8 }}><Text style={styles.label}>KEY IDEAS</Text>{aiSummary.result.keyPoints.map((point, index) => <View key={`${index}-${point}`} style={{ flexDirection: 'row', gap: 9 }}><Text style={{ color: palette.yellow, fontWeight: '900' }}>•</Text><Text style={[styles.body, { flex: 1, color: '#d9e3de' }]}>{point}</Text></View>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 7 }}><Text style={styles.label}>IMPORTANT TERMS</Text>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={[styles.body, { color: '#d9e3de' }]}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.body}>Create a concise study guide from this folder’s notes and sources.</Text>}</View> : <View style={{ gap: 15 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}><ActionButton label={busy ? 'Reading file…' : 'Add source file'} onPress={() => importFile('module')} /></View>
         {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
         {activeSubject.files.filter((file) => file.role === 'source').map((file) => <View key={file.id} style={[styles.card, { gap: 10, padding: 15 }]}>
