@@ -18,6 +18,7 @@ import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { parse as parsePowerPoint, renderSlideToSvg, slideText } from '@web-ppt/core';
+import { checkAnswerWithAI, draftQuestionsWithAI, summarizeWithAI, type AiResult } from './ai';
 
 type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; sourceLabel?: string; sourceFileId?: string; manual?: boolean };
 type StudyAttempt = { id: string; question: string; mode: Pace; outcome: 'correct' | 'missed' | 'self-rated-ready' | 'needs-review'; createdAt: string };
@@ -29,16 +30,6 @@ type Subject = { id: string; name: string; notes: string; questionsText: string;
 type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; selectedSourceIds?: string[]; sourceScope: 'subject' | 'file' | 'notes' | 'selected' };
 type Pace = 'cram' | 'steady' | 'deep';
 type Phase = 'module' | 'diagnostic' | 'review' | 'check';
-type AiResult = { summary: string; keyPoints: string[]; vocabulary: { term: string; definition: string }[]; questions: string[]; feedback: string; assessment: 'supported' | 'partial' | 'review'; evidence: string };
-
-async function requestAI(payload: Record<string, unknown>): Promise<AiResult> {
-  const localHost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
-  const endpoint = localHost ? 'http://127.0.0.1:3001/api/ai' : '/api/ai';
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The AI request failed. Please try again.');
-  return data.result as AiResult;
-}
 
 const storageKey = 'recall-loop.workspace.v2';
 const legacyStorageKey = 'recall-loop.workspace.v1';
@@ -595,6 +586,9 @@ export default function App() {
   const [answerDraft, setAnswerDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [aiSummary, setAiSummary] = useState<{ subjectId: string; result: AiResult } | null>(null);
   const [aiFeedback, setAiFeedback] = useState<AiResult | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1070,10 +1064,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const generateQuestions = async () => {
+    if (!apiKey) { setShowApiKeyModal(true); return; }
     if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
     setAiBusy(true);
     try {
-      const result = await requestAI({ action: 'questions', text: studySourceText, count: 8, existingQuestions: questionList.join('\n') });
+      const result = await draftQuestionsWithAI(apiKey, studySourceText, questionList, 8);
       const additions = result.questions.map((question) => question.trim()).filter((question) => question && !questionList.some((existing) => existing.toLowerCase() === question.toLowerCase()));
       if (!additions.length) { notify('AI could not find any new questions in these sources.'); return; }
       const updatedQuestions = [...questionList, ...additions];
@@ -1087,10 +1082,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const generateSummary = async () => {
+    if (!apiKey) { setShowApiKeyModal(true); return; }
     if (subjectSourceText.trim().length < 40) { notify('Add notes or a lecture source first.'); return; }
     setAiBusy(true);
     try {
-      const result = await requestAI({ action: 'summary', subject: activeSubject?.name || 'Study materials', text: subjectSourceText });
+      const result = await summarizeWithAI(apiKey, subjectSourceText, activeSubject?.name || 'Study materials');
       setAiSummary({ subjectId: activeSubjectId || '', result });
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not summarize these sources. Try again.');
@@ -1098,11 +1094,12 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const getAnswerFeedback = async () => {
+    if (!apiKey) { setShowApiKeyModal(true); return; }
     if (!answerDraft.trim()) { notify('Write a short answer first.'); return; }
     if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
     setAiBusy(true);
     try {
-      const result = await requestAI({ action: 'answer', text: studySourceText, question: currentQuestion, answer: answerDraft });
+      const result = await checkAnswerWithAI(apiKey, studySourceText, currentQuestion, answerDraft);
       setAiFeedback(result);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not check this answer. Try again.');
@@ -1241,7 +1238,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       {materialsTab === 'add' ? <View style={{ gap: 14 }}>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{([['notes', 'Subject notes'], ['questions', 'Questions already asked']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: addTab === id }} onPress={() => setAddTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 18, backgroundColor: addTab === id ? 'rgba(33,129,91,0.3)' : 'rgba(255,255,255,0.04)' }}><Text style={{ color: addTab === id ? '#eaffef' : palette.muted, fontWeight: '700' }}>{label}</Text></Pressable>)}</View>
       {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View><TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary disabled={aiBusy} label={aiBusy ? 'Writing questions…' : 'Draft practice questions with AI'} onPress={() => void generateQuestions()} /></View>}
-      </View> : materialsTab === 'summary' ? <View testID="torch-block" style={[styles.card, { gap: 14 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800' }}>AI Summary</Text><ActionButton compact disabled={aiBusy || subjectSourceText.trim().length < 40} label={aiBusy ? 'Summarizing…' : aiSummary?.subjectId === activeSubject.id ? 'Refresh summary' : 'Summarize sources'} onPress={() => void generateSummary()} /></View><Text style={styles.small}>Extracted source text is sent to OpenAI when you request AI help.</Text>{aiSummary?.subjectId === activeSubject.id ? <><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 23 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 8 }}><Text style={styles.label}>KEY IDEAS</Text>{aiSummary.result.keyPoints.map((point, index) => <View key={`${index}-${point}`} style={{ flexDirection: 'row', gap: 9 }}><Text style={{ color: palette.yellow, fontWeight: '900' }}>•</Text><Text style={[styles.body, { flex: 1, color: '#d9e3de' }]}>{point}</Text></View>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 7 }}><Text style={styles.label}>IMPORTANT TERMS</Text>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={[styles.body, { color: '#d9e3de' }]}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.body}>Create a concise study guide from this folder’s notes and sources.</Text>}</View> : <View style={{ gap: 15 }}>
+      </View> : materialsTab === 'summary' ? <View testID="torch-block" style={[styles.card, { gap: 14 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800' }}>AI Summary</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}><ActionButton compact secondary label={apiKey ? 'Key connected' : 'Connect key'} onPress={() => setShowApiKeyModal(true)} /><ActionButton compact disabled={aiBusy || subjectSourceText.trim().length < 40} label={aiBusy ? 'Summarizing…' : aiSummary?.subjectId === activeSubject.id ? 'Refresh summary' : apiKey ? 'Summarize sources' : 'Add key & summarize'} onPress={() => void generateSummary()} /></View></View><Text style={styles.small}>Source text is sent directly from this browser to OpenAI when you request AI help.</Text>{aiSummary?.subjectId === activeSubject.id ? <><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 23 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 8 }}><Text style={styles.label}>KEY IDEAS</Text>{aiSummary.result.keyPoints.map((point, index) => <View key={`${index}-${point}`} style={{ flexDirection: 'row', gap: 9 }}><Text style={{ color: palette.yellow, fontWeight: '900' }}>•</Text><Text style={[styles.body, { flex: 1, color: '#d9e3de' }]}>{point}</Text></View>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 7 }}><Text style={styles.label}>IMPORTANT TERMS</Text>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={[styles.body, { color: '#d9e3de' }]}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.body}>Create a concise study guide from this folder’s notes and sources.</Text>}</View> : <View style={{ gap: 15 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}><ActionButton label={busy ? 'Reading file…' : 'Add source file'} onPress={() => importFile('module')} /></View>
         {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
         {activeSubject.files.filter((file) => file.role === 'source').map((file) => <View key={file.id} style={[styles.card, { gap: 10, padding: 15 }]}>
@@ -1310,6 +1307,20 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         </ScrollView>
       </View>
     </View>
+    <Modal visible={showApiKeyModal} transparent animationType="fade" onRequestClose={() => setShowApiKeyModal(false)}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center', padding: compact ? 12 : 20 }}>
+        <View style={[styles.card, { width: '100%', maxWidth: 520, gap: 14, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)', padding: compact ? 16 : 22 }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><View style={{ flex: 1 }}><Text style={styles.label}>BRING YOUR OWN KEY</Text><Text style={{ color: palette.ink, fontSize: 21, fontWeight: '800', marginTop: 4 }}>Connect OpenAI</Text></View><ActionButton compact secondary label="Close" onPress={() => setShowApiKeyModal(false)} /></View>
+          <Text style={styles.body}>Your key stays in this tab’s memory and goes directly to OpenAI when you use an AI feature. Recall Loop does not save it.</Text>
+          <TextInput value={apiKeyDraft} onChangeText={setApiKeyDraft} secureTextEntry placeholder="Paste your OpenAI API key" placeholderTextColor="#9ba6ad" autoCapitalize="none" autoCorrect={false} textContentType="none" accessibilityLabel="OpenAI API key" style={[styles.input, { minHeight: 48, textAlignVertical: 'center' }]} />
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
+            {!!apiKey && <ActionButton compact secondary label="Disconnect key" onPress={() => { setApiKey(''); setApiKeyDraft(''); setShowApiKeyModal(false); setAiSummary(null); setAiFeedback(null); }} />}
+            <ActionButton compact disabled={!apiKeyDraft.trim()} label="Use for this session" onPress={() => { setApiKey(apiKeyDraft.trim()); setApiKeyDraft(''); setAiSummary(null); setAiFeedback(null); setShowApiKeyModal(false); }} />
+          </View>
+          <Text style={styles.small}>A browser key can be inspected by software running in this page. Use a key you control and revoke it when you’re done.</Text>
+        </View>
+      </View>
+    </Modal>
     <Modal visible={!!sourceReader} transparent animationType="fade" onRequestClose={() => setSourceReader(null)}>
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center', padding: compact ? 12 : 20 }}>
         <View style={[styles.card, { width: '100%', maxWidth: 820, maxHeight: '88%', gap: 14, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)', padding: compact ? 16 : 22 }]}>

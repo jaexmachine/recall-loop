@@ -56,11 +56,10 @@ flowchart TD
     C -->|Draft questions| E[Questions grounded in your sources]
     C -->|Check my answer| F[Retrieve matching passages]
     F --> G[Feedback with source evidence]
-    D --> H[Private server endpoint]
+    D --> H[OpenAI Responses API]
     E --> H
     G --> H
-    H --> I[OpenAI Responses API]
-    J[API key · Vercel environment] -. server only .-> H
+    J[Your API key · tab memory] -. sent directly .-> H
     B --> K[(Workspace stays in this browser)]
     classDef local fill:#143b2b,stroke:#54bd7f,color:#f3f6f4,stroke-width:1.5px
     classDef server fill:#102b25,stroke:#73c99a,color:#f3f6f4,stroke-width:1.5px
@@ -70,7 +69,7 @@ flowchart TD
     class K storage
 ```
 
-The browser extracts document text and keeps the workspace locally. When you ask for AI help, the relevant extracted text is sent to the Recall Loop API endpoint and then to OpenAI. The API key stays on the server. Requests use `store: false`; OpenAI may still retain API content in abuse-monitoring logs for up to 30 days by default. Do not send confidential course or personal information unless you are comfortable with that handling.
+Recall Loop uses a bring-your-own-key (BYOK) model. Add your OpenAI API key in **Materials → AI Summary → Connect key**. The key is held in memory only for the current tab session, is never saved by Recall Loop, and is sent directly from your browser to OpenAI. AI requests also send the relevant extracted text to OpenAI. The request uses `store: false`; OpenAI may still retain API content in abuse-monitoring logs for up to 30 days by default. A key used in a browser can be inspected by software running in the page, so use a key you control and revoke it when finished. [OpenAI API key guidance](https://developers.openai.com/api/docs/guides/api-keys)
 
 Answer feedback uses a small lexical retrieval step on the server to select up to five relevant passages before asking the model. This is a first grounded prototype, not a vector database or a full RAG pipeline. Generated content can be wrong; check the cited passage before relying on it.
 
@@ -82,23 +81,9 @@ Requirements: Node.js and npm.
 git clone https://github.com/jaexmachine/recall-loop.git
 cd recall-loop
 npm install
+npm run web
 ```
-
-Copy `.env.example` to `.env` and replace the placeholder with your API key. In PowerShell, run `Copy-Item .env.example .env`, then edit `.env`.
-
-Run the AI endpoint in one terminal:
-
-```bash
-npm run ai:local
-```
-
-Run the website in a second terminal:
-
-```bash
-npm run web -- --port 8081
-```
-
-The local AI endpoint listens on `127.0.0.1:3001`. If no key is configured, AI actions show a setup message. Keep `.env` private; it is ignored by Git.
+Enter your API key in **Materials → AI Summary → Connect key**. It is cleared when the tab is refreshed or closed. No local AI server or `.env` file is required.
 
 Create a production web build:
 
@@ -116,13 +101,11 @@ The repository includes Vercel settings for the Expo web export.
 2. Use the repository root and the `main` branch.
 3. Deploy with the detected project settings.
 
-The build runs `npm run build:web` and serves `dist/`. The `/api/ai` function runs separately on Vercel’s Node.js runtime. Each push to `main` triggers a production deployment; pull requests receive preview deployments.
-
-Add `OPENAI_API_KEY` in **Vercel → Project Settings → Environment Variables** for Production, Preview, and Development, then redeploy. Optionally set `OPENAI_MODEL`; the default is `gpt-6-luna`. Never add the key to `App.tsx`, a public `EXPO_PUBLIC_*` variable, or Git. The app has no account system yet, so visitors share the configured API usage. The endpoint applies request size limits and a basic rate guard; also set a usage budget or spending alert on the OpenAI project used for this site.
+The build runs `npm run build:web` and serves `dist/`. AI requests go from each visitor’s browser directly to OpenAI using their own key; Vercel does not need an API key or AI server. Each push to `main` triggers a production deployment; pull requests receive preview deployments.
 
 ## Current stage
 
-Recall Loop 0.1 is a browser-based prototype with optional OpenAI features. AI summaries and question drafts use the supplied folder or selected study sources. Answer feedback retrieves relevant source passages and returns an evidence quote; it is a study aid, not an automatic grade. Local question-to-source matching remains available as a transparent fallback.
+Recall Loop 0.1 is a browser-based prototype with optional OpenAI features. AI summaries and question drafts use the supplied folder or selected study sources. Answer feedback retrieves relevant source passages in the browser and returns an evidence quote; it is a study aid, not an automatic grade. Local question-to-source matching remains available as a transparent fallback.
 
 Some complex PowerPoint features may render differently from Microsoft Office. Large files are limited to keep browser storage usable: uploads are capped at 20 MB, with an additional limit on extracted text. Browser data does not automatically transfer between devices; use a backup when moving your workspace.
 
