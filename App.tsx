@@ -589,6 +589,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState('');
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState(0);
   const [aiSummary, setAiSummary] = useState<{ subjectId: string; result: AiResult } | null>(null);
   const [aiFeedback, setAiFeedback] = useState<AiResult | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1185,33 +1186,35 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     { id: 'deep', icon: '◎', title: 'Deep', time: '35 min', description: 'Read the module, then test yourself.' },
   ];
   const selectedOption = paceOptions.find((option) => option.id === selectedPace)!;
-  const flowSteps = [
-    { tag: 'RECALL', title: 'Try from memory', text: 'Answer before opening your notes.' },
-    { tag: 'REVIEW', title: 'Check the source', text: 'Open the passage tied to your question.' },
-    { tag: 'RETRY', title: 'Try again', text: 'Track what still needs work in Progress.' },
+  const tutorialSteps = [
+    { label: 'ADD', title: 'Bring in your course material', description: 'Create a subject folder, then add notes or upload a lecture file.' },
+    { label: 'CHOOSE', title: 'Pick what you want to study', description: 'Select one source, a few, or the whole folder. Add your questions or draft them with AI.' },
+    { label: 'PRACTICE', title: 'Recall, review, and retry', description: 'Choose a pace, answer from memory, check the source, and revisit what needs work.' },
   ];
+  const activeTutorialStep = tutorialSteps[tutorialStep];
+  const heroTutorial = <View testID="torch-block" style={[styles.card, { width: '100%', maxWidth: 760, gap: 13, padding: compact ? 16 : 20, backgroundColor: 'rgba(18,37,29,0.62)', borderColor: 'rgba(143,203,166,0.24)' }]}>
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: 5 }}><Text style={[styles.label, { color: '#8fcba6' }]}>QUICK TOUR · {String(tutorialStep + 1).padStart(2, '0')} / 03</Text><Text style={{ color: palette.ink, fontSize: compact ? 17 : 19, fontWeight: '800' }}>{activeTutorialStep.title}</Text></View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 4 }}>{tutorialSteps.map((step, index) => <Pressable key={step.label} accessibilityRole="button" accessibilityLabel={`Tutorial step ${index + 1}: ${step.label.toLowerCase()}`} accessibilityState={{ selected: tutorialStep === index }} onPress={() => setTutorialStep(index)} style={{ width: tutorialStep === index ? 22 : 8, height: 8, borderRadius: 5, backgroundColor: tutorialStep === index ? '#9fe1b5' : 'rgba(220,239,226,0.3)' }} />)}</View>
+    </View>
+    <Text style={styles.body}>{activeTutorialStep.description}</Text>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+      <View style={{ flexDirection: 'row', gap: 7 }}><ActionButton compact secondary disabled={tutorialStep === 0} label="Back" onPress={() => setTutorialStep((step) => Math.max(0, step - 1))} /><ActionButton compact secondary disabled={tutorialStep === tutorialSteps.length - 1} label="Next" onPress={() => setTutorialStep((step) => Math.min(tutorialSteps.length - 1, step + 1))} /></View>
+      {tutorialStep === tutorialSteps.length - 1 && <ActionButton compact label={hasStudyContent ? 'Choose a pace →' : 'Open Materials →'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} />}
+    </View>
+  </View>;
   const materialsSection = <View testID="scroll-reveal" style={{ paddingVertical: 54, borderTopWidth: 1, borderColor: palette.line, gap: 14 }}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
       <View style={{ gap: 5 }}><Text style={[styles.label, { color: '#8fcba6' }]}>MATERIALS</Text><Text style={[styles.title, { fontSize: 28 }]}>{hasStudyContent ? displayModuleTitle : 'Build your study set'}</Text></View>
       <ActionButton secondary label={hasStudyContent ? 'Open materials' : 'Add materials'} onPress={() => setPage('import')} />
     </View>
   </View>;
-  const studyFlowSection = <View testID="scroll-reveal" style={{ paddingVertical: 64, borderTopWidth: 1, borderColor: palette.line, gap: 22 }}>
-    <View style={{ maxWidth: 650, gap: 8 }}><Text style={[styles.label, { color: '#8fcba6' }]}>WHAT HAPPENS IN A SESSION</Text><Text style={[styles.title, { fontSize: 32 }]}>Recall. Review. Retry.</Text></View>
-    <View style={{ gap: 12 }}>{flowSteps.map((item, index) => <React.Fragment key={item.tag}>
-      <View testID="torch-block" style={[styles.card, { width: wide ? '76%' : '100%', alignSelf: wide && index % 2 ? 'flex-end' : 'flex-start', flexDirection: 'row', alignItems: 'flex-start', gap: 16, padding: 20 }]}>
-        <View style={{ width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(245,216,94,0.13)' }}><Text style={{ color: palette.yellow, fontSize: 14, fontWeight: '900' }}>{String(index + 1).padStart(2, '0')}</Text></View>
-        <View style={{ flex: 1, gap: 6 }}><Text style={[styles.label, { color: '#8fcba6' }]}>{item.tag}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>{item.title}</Text><Text style={styles.body}>{item.text}</Text></View>
-      </View>
-      {index < flowSteps.length - 1 && <Text aria-hidden style={{ alignSelf: 'center', color: '#8fcba6', fontSize: 20, lineHeight: 22 }}>↓</Text>}
-    </React.Fragment>)}</View>
-  </View>;
   const home = <View style={[styles.content, { paddingTop: 10, gap: 0 }]}>
     <View testID="scroll-reveal" style={{ minHeight: compact ? undefined : 520, justifyContent: 'center', alignItems: 'flex-start', paddingVertical: compact ? 38 : 64, gap: 20 }}>
       <View style={{ width: '100%', maxWidth: 800, alignItems: 'flex-start', gap: 13 }}><Text style={[styles.label, { color: '#8fcba6', letterSpacing: 1.8 }]}>LESS REREADING · MORE RECALL</Text><Text style={[styles.title, { fontSize: wide ? 52 : compact ? 34 : 42, lineHeight: wide ? 62 : compact ? 42 : 52 }]}>Study with a loop that sticks.</Text><Text style={[styles.body, { fontSize: 17, lineHeight: 27, maxWidth: 650 }]}>Turn notes and lecture files into focused, question-led practice.</Text></View>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 4 }}><ActionButton label={hasStudyContent ? 'Choose a study mode →' : 'Get started →'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} /><ActionButton secondary label="See how it works ↓" onPress={() => scrollRef.current?.scrollToEnd({ animated: true })} /></View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 4 }}><ActionButton label={hasStudyContent ? 'Choose a study mode →' : 'Get started →'} onPress={() => setPage(hasStudyContent ? 'modes' : 'import')} /></View>
+      {heroTutorial}
     </View>
-    {studyFlowSection}
     {materialsSection}
   </View>;
 
