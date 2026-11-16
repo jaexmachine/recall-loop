@@ -52,26 +52,28 @@ flowchart LR
 flowchart TD
     A[PDF · PPTX · DOCX · notes] --> B[Extract text in your browser]
     B --> C{Choose an AI action}
-    C -->|Summary| D[Study guide · key ideas · terms]
-    C -->|Draft questions| E[Questions grounded in your sources]
-    C -->|Check my answer| F[Retrieve matching passages]
-    F --> G[Feedback with source evidence]
-    D --> H[OpenAI Responses API]
-    E --> H
-    G --> H
-    J[Your API key · tab memory] -. sent directly .-> H
+    C -->|Study set| I[OpenAI Responses API]
+    C -->|Quiz| I
+    C -->|Draft questions| I
+    C -->|Check my answer| G[Retrieve matching passages]
+    G --> I
+    I --> D[Flashcards · evidence · source refs]
+    I --> E[Playable quiz · explanations]
+    I --> F[Questions grounded in your sources]
+    I --> H[Feedback with source evidence]
+    J[Your API key · tab memory] -. sent directly .-> I
     B --> K[(Workspace stays in this browser)]
     classDef local fill:#143b2b,stroke:#54bd7f,color:#f3f6f4,stroke-width:1.5px
     classDef server fill:#102b25,stroke:#73c99a,color:#f3f6f4,stroke-width:1.5px
     classDef storage fill:#2c351c,stroke:#e8cc5e,color:#fff2ad,stroke-width:1.5px
-    class A,B,C,D,E,F,G local
-    class H,I,J server
+    class A,B,C,G,K local
+    class D,E,F,H,I,J server
     class K storage
 ```
 
-Recall Loop uses a bring-your-own-key (BYOK) model. Add your OpenAI API key in **Materials → AI Summary → Connect key**. The key is held in memory only for the current tab session, is never saved by Recall Loop, and is sent directly from your browser to OpenAI. AI requests also send the relevant extracted text to OpenAI. The request uses `store: false`; OpenAI may still retain API content in abuse-monitoring logs for up to 30 days by default. A key used in a browser can be inspected by software running in the page, so use a key you control and revoke it when finished. [OpenAI API key guidance](https://developers.openai.com/api/docs/guides/api-keys)
+Recall Loop uses a bring-your-own-key (BYOK) model. Add your OpenAI API key in **Materials → AI Studio → Connect key**. The key is held in memory only for the current tab session, is never saved by Recall Loop, and is sent directly from your browser to OpenAI. AI requests also send the selected extracted text to OpenAI. The request uses `store: false`; OpenAI may still retain API content in abuse-monitoring logs for up to 30 days by default. A key used in a browser can be inspected by software running in the page, so use a key you control and revoke it when finished. [OpenAI API key guidance](https://developers.openai.com/api/docs/guides/api-keys)
 
-Answer feedback uses a small lexical retrieval step on the server to select up to five relevant passages before asking the model. This is a first grounded prototype, not a vector database or a full RAG pipeline. Generated content can be wrong; check the cited passage before relying on it.
+Answer feedback uses a small lexical retrieval step in your browser to select up to five relevant passages before asking the model. This is a first grounded prototype, not a vector database or a full RAG pipeline. Generated content can be wrong; check the cited passage before relying on it.
 
 ## Run locally
 
@@ -83,7 +85,7 @@ cd recall-loop
 npm install
 npm run web
 ```
-Enter your API key in **Materials → AI Summary → Connect key**. It is cleared when the tab is refreshed or closed. No local AI server or `.env` file is required.
+Enter your API key in **Materials → AI Studio → Connect key**. Select the materials to include, then generate source-grounded flashcards and a playable quiz. Export either as CSV: flashcards use `Front,Back`; quizzes include the question, four choices, correct answer, explanation, and source. CSV fields are quoted and escaped for commas, quotes, and line breaks. The key is cleared when the tab is refreshed or closed. No local AI server or `.env` file is required.
 
 Create a production web build:
 
@@ -105,7 +107,7 @@ The build runs `npm run build:web` and serves `dist/`. AI requests go from each 
 
 ## Current stage
 
-Recall Loop 0.1 is a browser-based prototype with optional OpenAI features. AI summaries and question drafts use the supplied folder or selected study sources. Answer feedback retrieves relevant source passages in the browser and returns an evidence quote; it is a study aid, not an automatic grade. Local question-to-source matching remains available as a transparent fallback.
+Recall Loop 0.1 is a browser-based prototype with optional OpenAI features. AI flashcards, quizzes, summaries, and question drafts use selected study sources. Generated cards include supporting evidence and source references; quiz items include answer explanations. Answer feedback retrieves relevant source passages in the browser and returns an evidence quote; it is a study aid, not an automatic grade. CSV exports are designed for importing study cards or quiz questions into other study tools. Local question-to-source matching remains available as a transparent fallback.
 
 Some complex PowerPoint features may render differently from Microsoft Office. Large files are limited to keep browser storage usable: uploads are capped at 20 MB, with an additional limit on extracted text. Browser data does not automatically transfer between devices; use a backup when moving your workspace.
 
