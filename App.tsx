@@ -886,7 +886,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       const picker = document.createElement('input');
       picker.type = 'file'; picker.accept = '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
       const file = await new Promise<File | null>((resolve) => {
-        picker.onchange = () => resolve(picker.files?.[0] || null);
+        picker.addEventListener('change', () => resolve(picker.files?.[0] || null), { once: true });
+        picker.addEventListener('cancel', () => resolve(null), { once: true });
         picker.click();
       });
       if (!file) return;
