@@ -1186,7 +1186,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   ];
 
   const brand = <Pressable accessibilityRole="link" accessibilityLabel="Recall Loop home" onPress={() => setPage('home')} style={[styles.brandRow, { marginBottom: 0, marginRight: wide || compact ? 0 : 'auto', paddingVertical: 7 }]}>
-    <Svg accessibilityElementsHidden width={34} height={30} viewBox="0 0 36 32" fill="none">
+    <Svg {...(Platform.OS === 'web' ? { 'aria-hidden': true } : { accessibilityElementsHidden: true })} width={34} height={30} viewBox="0 0 36 32" fill="none">
       <Path d="M4.5 7.5C9.1 5.6 13.6 6.1 18 9.2C22.4 6.1 26.9 5.6 31.5 7.5V25.6C26.9 23.8 22.4 24.1 18 27C13.6 24.1 9.1 23.8 4.5 25.6V7.5Z" stroke="#94dfa9" strokeWidth={2} strokeLinejoin="round" />
       <Path d="M18 9.5V26" stroke="#94dfa9" strokeWidth={1.6} strokeLinecap="round" />
       <Path d="M8 16C10.6 12.5 13.4 12.5 18 16C22.6 19.5 25.4 19.5 28 16C25.4 12.5 22.6 12.5 18 16C13.4 19.5 10.6 19.5 8 16Z" stroke="#e9d77b" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
