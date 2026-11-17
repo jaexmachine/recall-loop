@@ -98,30 +98,49 @@ function outputText(payload: any) {
 }
 
 async function requestStructuredJson(apiKey: string, provider: AiProvider, instructions: string, input: string, schema: object, schemaName: string, maxOutput: number) {
-  let response: Response;
   const providerName = provider === 'gemini' ? 'Gemini' : 'OpenAI';
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
-  try {
-    const gemini = provider === 'gemini';
-    response = await fetch(gemini ? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent' : 'https://api.openai.com/v1/responses', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: gemini
-        ? { 'x-goog-api-key': apiKey.trim(), 'Content-Type': 'application/json' }
-        : { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(gemini
-        ? { systemInstruction: { parts: [{ text: instructions }] }, contents: [{ role: 'user', parts: [{ text: input }] }], generationConfig: { maxOutputTokens: maxOutput, responseMimeType: 'application/json', responseJsonSchema: schema } }
-        : { model: 'gpt-6-luna', store: false, instructions, input: [{ role: 'user', content: input }], max_output_tokens: maxOutput, reasoning: { effort: 'none' }, text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } } }),
-    });
-  } catch {
-    if (controller.signal.aborted) throw new Error(`${providerName} took too long to respond. Try fewer materials.`);
-    throw new Error(`Could not connect to ${providerName}. Check your connection and try again.`);
-  } finally {
-    clearTimeout(timeout);
+  const gemini = provider === 'gemini';
+  const endpoint = gemini ? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent' : 'https://api.openai.com/v1/responses';
+  const headers: Record<string, string> = gemini
+    ? { 'x-goog-api-key': apiKey.trim(), 'Content-Type': 'application/json' }
+    : { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' };
+  const body = JSON.stringify(gemini
+    ? { systemInstruction: { parts: [{ text: instructions }] }, contents: [{ role: 'user', parts: [{ text: input }] }], generationConfig: { maxOutputTokens: maxOutput, responseMimeType: 'application/json', responseJsonSchema: schema } }
+    : { model: 'gpt-6-luna', store: false, instructions, input: [{ role: 'user', content: input }], max_output_tokens: maxOutput, reasoning: { effort: 'none' }, text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } } });
+  const deadline = Date.now() + 60_000;
+  const maxAttempts = 3;
+  let response: Response | undefined;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`${providerName} took too long to respond. Try fewer materials.`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), remaining);
+    try {
+      response = await fetch(endpoint, { method: 'POST', signal: controller.signal, headers, body });
+    } catch {
+      if (controller.signal.aborted) throw new Error(`${providerName} took too long to respond. Try fewer materials.`);
+      throw new Error(`Could not connect to ${providerName}. Check your connection and try again.`);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (response.status !== 503 || attempt === maxAttempts - 1) break;
+    try { await response.body?.cancel(); } catch { /* release the failed response before retrying */ }
+    const retryAfter = response.headers?.get('retry-after');
+    const seconds = Number(retryAfter);
+    const dateDelay = retryAfter && !Number.isFinite(seconds) ? Date.parse(retryAfter) - Date.now() : NaN;
+    const serverDelay = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : dateDelay;
+    const backoff = 500 * (2 ** attempt) + Math.random() * 250;
+    const delay = Math.min(Number.isFinite(serverDelay) && serverDelay > 0 ? serverDelay : backoff, 5_000, deadline - Date.now());
+    if (delay <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
+
+  if (!response) throw new Error(`Could not connect to ${providerName}. Check your connection and try again.`);
   if (response.status === 401 || response.status === 403) throw new Error(`${providerName} rejected this key. Check that it belongs to the selected provider and can use the model.`);
   if (response.status === 429) throw new Error(`${providerName} usage is temporarily limited or out of credits. Check your API billing and limits.`);
+  if (response.status === 503) throw new Error(`${providerName} is temporarily at capacity. We retried automatically; try again shortly.`);
   if (response.status === 404) throw new Error(`${providerName} could not find the selected model for this key.`);
   if (!response.ok) {
     let detail = '';

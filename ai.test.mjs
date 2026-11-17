@@ -83,3 +83,51 @@ test('answer feedback retrieves a relevant passage and rejects a key error clear
     /Gemini rejected this key/i,
   );
 });
+
+test('Gemini retries temporary high-demand responses and succeeds within the retry limit', async () => {
+  const source = 'Monte Carlo simulation generates random samples from a known input distribution.';
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts < 3) {
+      return { ok: false, status: 503, json: async () => ({ error: { message: 'This model is currently experiencing high demand.' } }) };
+    }
+    return { ok: true, status: 200, json: async () => geminiResponse({
+      summary: '', keyPoints: [], vocabulary: [], questions: [],
+      feedback: 'The answer is supported.', assessment: 'supported',
+      evidence: 'generates random samples from a known input distribution',
+    }) };
+  };
+
+  const result = await checkAnswerWithAI('test-key', source, 'How are outcomes estimated?', 'By random samples.', 'gemini');
+  assert.equal(attempts, 3);
+  assert.equal(result.assessment, 'supported');
+});
+
+test('Gemini reports temporary capacity after exhausting retries', async () => {
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return { ok: false, status: 503, json: async () => ({ error: { message: 'High demand.' } }) };
+  };
+
+  await assert.rejects(
+    checkAnswerWithAI('test-key', 'Monte Carlo simulation generates random samples from a known input distribution.', 'How are outcomes estimated?', 'By random samples.', 'gemini'),
+    /temporarily at capacity.*retried automatically/i,
+  );
+  assert.equal(attempts, 3);
+});
+
+test('Gemini does not retry invalid keys or quota responses', async () => {
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return { ok: false, status: 429, json: async () => ({ error: { message: 'Quota exhausted.' } }) };
+  };
+
+  await assert.rejects(
+    checkAnswerWithAI('test-key', 'Monte Carlo simulation generates random samples from a known input distribution.', 'How are outcomes estimated?', 'By random samples.', 'gemini'),
+    /temporarily limited or out of credits/i,
+  );
+  assert.equal(attempts, 1);
+});
