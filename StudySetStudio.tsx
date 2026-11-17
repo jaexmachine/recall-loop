@@ -10,6 +10,7 @@ type Props = {
   sourceHash: string;
   questions: string[];
   apiKeyConnected: boolean;
+  providerName: string;
   studySet?: AiStudySet;
   onConnectKey: () => void;
   onGenerate: () => Promise<AiStudySet>;
@@ -33,7 +34,7 @@ function ControlButton({ label, onPress, secondary = false, disabled = false }: 
   return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={{ minHeight: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 11, borderWidth: secondary ? 1 : 0, borderColor: colors.line, backgroundColor: disabled ? 'rgba(255,255,255,0.04)' : secondary ? 'rgba(255,255,255,0.06)' : colors.green, opacity: disabled ? 0.48 : 1 }}><Text style={{ color: disabled ? colors.muted : colors.ink, fontWeight: '800', fontSize: 13 }}>{label}</Text></Pressable>;
 }
 
-export function StudySetStudio({ subjectName, materialCount, materialText, sourceHash, questions, apiKeyConnected, studySet, onConnectKey, onGenerate, onSave }: Props) {
+export function StudySetStudio({ subjectName, materialCount, materialText, sourceHash, questions, apiKeyConnected, providerName, studySet, onConnectKey, onGenerate, onSave }: Props) {
   const currentSet = studySet?.sourceHash === sourceHash ? studySet : undefined;
   const [mode, setMode] = useState<'cards' | 'quiz'>('cards');
   const [cardIndex, setCardIndex] = useState(0);
@@ -62,8 +63,8 @@ export function StudySetStudio({ subjectName, materialCount, materialText, sourc
 
   return <View testID="torch-block" style={{ borderRadius: 22, borderWidth: 1, borderColor: colors.line, backgroundColor: 'rgba(17,31,26,0.70)', padding: 20, gap: 16 }}>
     <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-      <View style={{ flex: 1, minWidth: 210, gap: 5 }}><Text style={{ color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 1.1 }}>AI STUDY STUDIO</Text><Text style={{ color: colors.ink, fontSize: 21, fontWeight: '800' }}>Build a study set</Text><Text style={{ color: colors.muted, fontSize: 13, lineHeight: 19 }}>{materialCount ? `${materialCount} selected source${materialCount === 1 ? '' : 's'} · ${questions.length ? `${questions.length} existing question${questions.length === 1 ? '' : 's'} guide the set` : 'questions are generated from the material'}` : 'Select one or more sources to begin.'}</Text></View>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}><ControlButton secondary label={apiKeyConnected ? 'Key connected' : 'Connect key'} onPress={onConnectKey} /><ControlButton disabled={busy || materialCount === 0 || materialText.trim().length < 40} label={busy ? 'Building…' : currentSet ? 'Refresh set' : apiKeyConnected ? 'Generate set' : 'Add key & generate'} onPress={() => void generate()} /></View>
+      <View style={{ flex: 1, minWidth: 210, gap: 5 }}><Text style={{ color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 1.1 }}>AI STUDY STUDIO</Text><Text style={{ color: colors.ink, fontSize: 21, fontWeight: '800' }}>Build a study set</Text><Text style={{ color: colors.muted, fontSize: 13, lineHeight: 19 }}>{materialCount ? `${materialCount} selected · ${questions.length ? `${questions.length} questions to prioritize` : 'questions made from your material'}` : 'Select sources to begin.'}</Text></View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}><ControlButton secondary label={apiKeyConnected ? `${providerName} connected` : 'Connect AI'} onPress={onConnectKey} /><ControlButton disabled={busy || materialCount === 0 || materialText.trim().length < 40} label={busy ? 'Building…' : currentSet ? 'Refresh set' : apiKeyConnected ? 'Generate set' : 'Connect AI & generate'} onPress={() => void generate()} /></View>
     </View>
     {!materialCount && <Text style={{ color: '#ffe49a', fontSize: 13 }}>Choose sources in the Sources tab. Only selected notes and files are sent for this set.</Text>}
     {!!error && <Text accessibilityRole="alert" style={{ color: '#ffc2aa', fontSize: 13, lineHeight: 19 }}>{error}</Text>}
@@ -90,6 +91,6 @@ export function StudySetStudio({ subjectName, materialCount, materialText, sourc
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}>{checked ? <ControlButton label={quizIndex === currentSet.quiz.length - 1 ? 'Restart quiz' : 'Next question →'} onPress={() => { setQuizIndex((index) => index === currentSet.quiz.length - 1 ? 0 : index + 1); setSelectedOption(null); setChecked(false); }} /> : <ControlButton disabled={selectedOption === null} label="Check answer" onPress={() => setChecked(true)} />}</View>
       </View>}
     </View> : <View style={panel}><Text style={{ color: colors.ink, fontSize: 15, fontWeight: '700' }}>One source-grounded set, ready to study or export.</Text><Text style={{ color: colors.muted, fontSize: 13, lineHeight: 19 }}>Generate flashcards with answers and evidence, plus a playable multiple-choice quiz. Quiz questions you have already added help guide what gets covered.</Text></View>}
-    <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 16 }}>Source text is sent directly from this browser to OpenAI when you generate. The API key stays in this tab’s memory.</Text>
+    <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 16 }}>Selected text goes to {providerName} when you generate. Your key stays in this tab.</Text>
   </View>;
 }
