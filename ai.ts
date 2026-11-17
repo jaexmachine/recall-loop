@@ -99,10 +99,14 @@ function outputText(payload: any) {
 
 async function requestStructuredJson(apiKey: string, provider: AiProvider, instructions: string, input: string, schema: object, schemaName: string, maxOutput: number) {
   let response: Response;
+  const providerName = provider === 'gemini' ? 'Gemini' : 'OpenAI';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
     const gemini = provider === 'gemini';
     response = await fetch(gemini ? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent' : 'https://api.openai.com/v1/responses', {
       method: 'POST',
+      signal: controller.signal,
       headers: gemini
         ? { 'x-goog-api-key': apiKey.trim(), 'Content-Type': 'application/json' }
         : { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
@@ -111,12 +115,23 @@ async function requestStructuredJson(apiKey: string, provider: AiProvider, instr
         : { model: 'gpt-6-luna', store: false, instructions, input: [{ role: 'user', content: input }], max_output_tokens: maxOutput, reasoning: { effort: 'none' }, text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } } }),
     });
   } catch {
-    throw new Error(`Could not connect to ${provider === 'gemini' ? 'Gemini' : 'OpenAI'}. Check your connection and try again.`);
+    if (controller.signal.aborted) throw new Error(`${providerName} took too long to respond. Try fewer materials.`);
+    throw new Error(`Could not connect to ${providerName}. Check your connection and try again.`);
+  } finally {
+    clearTimeout(timeout);
   }
-  if (response.status === 401 || response.status === 403) throw new Error(`${provider === 'gemini' ? 'Gemini' : 'OpenAI'} rejected this key. Check that it belongs to the selected provider and can use the model.`);
-  if (response.status === 429) throw new Error(`${provider === 'gemini' ? 'Gemini' : 'OpenAI'} usage is temporarily limited or out of credits. Check your API billing and limits.`);
-  if (response.status === 404) throw new Error(`${provider === 'gemini' ? 'Gemini' : 'OpenAI'} could not find the selected model for this key.`);
-  if (!response.ok) throw new Error(`${provider === 'gemini' ? 'Gemini' : 'OpenAI'} could not complete this request. Try again in a moment.`);
+  if (response.status === 401 || response.status === 403) throw new Error(`${providerName} rejected this key. Check that it belongs to the selected provider and can use the model.`);
+  if (response.status === 429) throw new Error(`${providerName} usage is temporarily limited or out of credits. Check your API billing and limits.`);
+  if (response.status === 404) throw new Error(`${providerName} could not find the selected model for this key.`);
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const payload = await response.json();
+      const message = typeof payload.error === 'string' ? payload.error : payload.error?.message || payload.message;
+      if (typeof message === 'string') detail = message.trim();
+    } catch { /* use the short fallback when the provider returns no readable error */ }
+    throw new Error(detail ? `${providerName}: ${detail}` : `${providerName} could not complete this request. Try again in a moment.`);
+  }
   try {
     const payload = await response.json();
     const text = provider === 'gemini'
