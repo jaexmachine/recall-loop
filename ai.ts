@@ -125,7 +125,8 @@ async function requestStructuredJson(apiKey: string, provider: AiProvider, instr
       clearTimeout(timeout);
     }
 
-    if (response.status !== 503 || attempt === maxAttempts - 1) break;
+    const retryableServerError = response.status >= 500 && response.status <= 599;
+    if (!retryableServerError || attempt === maxAttempts - 1) break;
     try { await response.body?.cancel(); } catch { /* release the failed response before retrying */ }
     const retryAfter = response.headers?.get('retry-after');
     const seconds = Number(retryAfter);
@@ -140,7 +141,18 @@ async function requestStructuredJson(apiKey: string, provider: AiProvider, instr
   if (!response) throw new Error(`Could not connect to ${providerName}. Check your connection and try again.`);
   if (response.status === 401 || response.status === 403) throw new Error(`${providerName} rejected this key. Check that it belongs to the selected provider and can use the model.`);
   if (response.status === 429) throw new Error(`${providerName} usage is temporarily limited or out of credits. Check your API billing and limits.`);
-  if (response.status === 503) throw new Error(`${providerName} is temporarily at capacity. We retried automatically; try again shortly.`);
+  if (response.status >= 500 && response.status <= 599) {
+    let detail = '';
+    try {
+      const payload = await response.json();
+      const message = typeof payload.error === 'string' ? payload.error : payload.error?.message || payload.message;
+      if (typeof message === 'string') detail = message.trim();
+    } catch { /* show the short retry message when the provider returns no readable error */ }
+    const highDemand = /high demand|overload|at capacity|temporarily unavailable/i.test(detail);
+    throw new Error(highDemand
+      ? `${providerName} is temporarily at capacity. We retried automatically; try again shortly.`
+      : `${providerName} is temporarily unavailable. We retried automatically; try again shortly.`);
+  }
   if (response.status === 404) throw new Error(`${providerName} could not find the selected model for this key.`);
   if (!response.ok) {
     let detail = '';

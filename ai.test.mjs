@@ -118,6 +118,20 @@ test('Gemini reports temporary capacity after exhausting retries', async () => {
   assert.equal(attempts, 3);
 });
 
+test('Gemini retries high-demand failures returned with HTTP 500', async () => {
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return { ok: false, status: 500, json: async () => ({ error: { message: 'This model is currently experiencing high demand.' } }) };
+  };
+
+  await assert.rejects(
+    checkAnswerWithAI('test-key', 'Monte Carlo simulation generates random samples from a known input distribution.', 'How are outcomes estimated?', 'By random samples.', 'gemini'),
+    /temporarily at capacity.*retried automatically/i,
+  );
+  assert.equal(attempts, 3);
+});
+
 test('Gemini does not retry invalid keys or quota responses', async () => {
   let attempts = 0;
   globalThis.fetch = async () => {
