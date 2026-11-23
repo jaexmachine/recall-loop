@@ -35,13 +35,59 @@ type Phase = 'module' | 'diagnostic' | 'review' | 'check';
 const storageKey = 'recall-loop.workspace.v2';
 const legacyStorageKey = 'recall-loop.workspace.v1';
 const originalDbName = 'recall-loop.originals.v1';
+let originalsDatabasePromise: Promise<IDBDatabase> | null = null;
 
 function openOriginalsDatabase(): Promise<IDBDatabase> {
+  if (originalsDatabasePromise) return originalsDatabasePromise;
+  originalsDatabasePromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(originalDbName, 2);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('documents')) db.createObjectStore('documents', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('workspace')) db.createObjectStore('workspace');
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onclose = () => { originalsDatabasePromise = null; };
+      db.onversionchange = () => { db.close(); originalsDatabasePromise = null; };
+      resolve(db);
+    };
+    request.onerror = () => { originalsDatabasePromise = null; reject(request.error || new Error('Could not open browser file storage.')); };
+    request.onblocked = () => { originalsDatabasePromise = null; reject(new Error('Close other Recall Loop tabs to update browser storage.')); };
+  });
+  return originalsDatabasePromise;
+}
+
+async function loadWorkspaceSnapshot(): Promise<Partial<SavedWorkspace> | null> {
+  const db = await openOriginalsDatabase();
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(originalDbName, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('documents', { keyPath: 'id' });
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Could not open browser file storage.'));
+    const transaction = db.transaction('workspace', 'readonly');
+    const request = transaction.objectStore('workspace').get('current');
+    request.onsuccess = () => resolve((request.result as Partial<SavedWorkspace> | undefined) || null);
+    request.onerror = () => reject(request.error || new Error('Could not read the saved workspace.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Could not read the saved workspace.'));
+  });
+}
+
+async function saveWorkspaceSnapshot(workspace: SavedWorkspace) {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('workspace', 'readwrite');
+    transaction.objectStore('workspace').put(workspace, 'current');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not save the workspace.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Could not save the workspace.'));
+  });
+}
+
+async function clearWorkspaceSnapshot() {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('workspace', 'readwrite');
+    transaction.objectStore('workspace').delete('current');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not clear the saved workspace.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Could not clear the saved workspace.'));
   });
 }
 
@@ -53,7 +99,6 @@ async function saveOriginalDocument(document: OriginalDocument) {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error('Could not save the original file.'));
   });
-  db.close();
 }
 
 async function getOriginalDocument(id: string): Promise<OriginalDocument | null> {
@@ -63,7 +108,6 @@ async function getOriginalDocument(id: string): Promise<OriginalDocument | null>
     request.onsuccess = () => resolve((request.result as OriginalDocument | undefined) || null);
     request.onerror = () => reject(request.error || new Error('Could not read the original file.'));
   });
-  db.close();
   return result;
 }
 
@@ -75,7 +119,6 @@ async function deleteOriginalDocument(id: string) {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error('Could not remove the original file.'));
   });
-  db.close();
 }
 
 async function clearOriginalDocuments() {
@@ -86,7 +129,6 @@ async function clearOriginalDocuments() {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error('Could not clear original files.'));
   });
-  db.close();
 }
 
 async function replaceOriginalDocuments(documents: OriginalDocument[]) {
@@ -100,7 +142,6 @@ async function replaceOriginalDocuments(documents: OriginalDocument[]) {
     transaction.onerror = () => reject(transaction.error || new Error('Could not restore original files.'));
     transaction.onabort = () => reject(transaction.error || new Error('Restore was cancelled before completion.'));
   });
-  db.close();
 }
 const demoQuiz = [
   { question: 'Where does glycolysis take place, and what is its net ATP yield?', options: ['In the cytoplasm; net gain of 2 ATP', 'In the mitochondrial matrix; net gain of 30 ATP', 'At the inner mitochondrial membrane; no ATP made'], correct: 0, feedback: ['Glycolysis happens in the cytoplasm and produces a net gain of two ATP.', 'The mitochondrial matrix is where the citric acid cycle takes place. Glycolysis happens in the cytoplasm and has a net yield of 2 ATP.', 'The inner mitochondrial membrane is where oxidative phosphorylation happens. Glycolysis instead occurs in the cytoplasm and yields 2 ATP net.'] },
@@ -122,12 +163,12 @@ const styles = StyleSheet.create({
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 38 },
   navLabel: { color: '#91a1aa', fontSize: 11, fontWeight: '700', letterSpacing: 1.4, marginLeft: 12, marginBottom: 10, marginTop: 10 },
   navItem: { paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12, marginBottom: 4, flexDirection: 'row', gap: 11, alignItems: 'center' },
-  main: { flex: 1, minHeight: 0, width: '100%' },
-  inner: { width: '100%', maxWidth: 1320, alignSelf: 'center', paddingHorizontal: 30 },
+  main: { flex: 1, minWidth: 0, minHeight: 0 },
+  inner: { width: '100%', minWidth: 0, maxWidth: 1320, alignSelf: 'center', paddingHorizontal: 30 },
   header: { minHeight: 78, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', position: 'relative' },
-  content: { paddingTop: 28, paddingBottom: 56, gap: 20 },
+  content: { width: '100%', minWidth: 0, paddingTop: 28, paddingBottom: 56, gap: 20 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
-  card: { backgroundColor: palette.paper, borderRadius: 22, borderWidth: 1, borderColor: palette.line, padding: 22, overflow: 'hidden', shadowColor: '#000000', shadowOpacity: 0.28, shadowRadius: 24, shadowOffset: { width: 0, height: 12 }, elevation: 5 },
+  card: { minWidth: 0, backgroundColor: palette.paper, borderRadius: 22, borderWidth: 1, borderColor: palette.line, padding: 22, overflow: 'hidden', shadowColor: '#000000', shadowOpacity: 0.28, shadowRadius: 24, shadowOffset: { width: 0, height: 12 }, elevation: 5 },
   ambience: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, overflow: 'hidden' },
   scrollBackdrop: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, overflow: 'hidden', backgroundColor: palette.soft },
   backgroundBlur: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
@@ -203,7 +244,7 @@ function buildMatches(input: string | StudySegment[], questions: string[]): Matc
   const passages = asStudySegments(input).flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label, sourceFileId: segment.sourceFileId }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   return questions.map((question) => {
     const qTerms = terms(question);
-    const ranked = passages.map(({ passage, passageIndex }) => {
+    const ranked = passages.map(({ passage, passageIndex, sourceLabel, sourceFileId }) => {
       const pTerms = new Set(terms(passage));
       const overlap = qTerms.filter((t) => pTerms.has(t)).length;
       let answerCue = 0;
@@ -211,7 +252,7 @@ function buildMatches(input: string | StudySegment[], questions: string[]): Matc
       if (/\bmost\b|\bmajority\b/i.test(question) && /\bmost of the (?:ATP|energy)\b/i.test(passage)) answerCue += 4;
       if (/\bwhere\b|\blocation\b|\bplace\b/i.test(question) && /\b(?:happens|occurs|takes place)\s+(?:in|at|within)\b/i.test(passage)) answerCue += 2;
       if (/\byield\b|\bhow many\b|\bnet\b/i.test(question) && /\bnet\s+(?:gain|yield)\b/i.test(passage)) answerCue += 2;
-      return { passage, passageIndex, overlap, score: overlap + answerCue };
+      return { passage, passageIndex, sourceLabel, sourceFileId, overlap, score: overlap + answerCue };
     }).sort((a, b) => b.score - a.score || b.overlap - a.overlap);
     return ranked[0] && ranked[0].overlap > 0 ? { question, ...ranked[0] } : { question, passage: 'No clear passage match yet. Review this question manually.', overlap: 0, passageIndex: null };
   });
@@ -375,6 +416,120 @@ function wrapMatchedWords(textRoot: Element, highlightTerms: string[], mode: 'sl
   });
 }
 
+function highlightPdfPhrases(host: HTMLElement, textRoot: Element, phrases: string[]) {
+  host.querySelector('[data-source-highlight-layer]')?.remove();
+  const normalizeForSearch = (value: string) => value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const searchablePhrases = [...new Set(phrases.map(normalizeForSearch).filter((phrase) => phrase.length >= 4))];
+  if (!searchablePhrases.length) return;
+  const walker = (textRoot.ownerDocument || document).createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
+  const nodes: globalThis.Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as unknown as globalThis.Text);
+  let normalizedText = '';
+  const positions: { node: globalThis.Text; offset: number }[] = [];
+  let pendingSpace: { node: globalThis.Text; offset: number } | null = null;
+  nodes.forEach((node, nodeIndex) => {
+    const value = node.nodeValue || '';
+    if (nodeIndex > 0 && value && normalizedText && normalizedText.at(-1) !== ' ' && /[\p{L}\p{N}]/u.test(value[0])) {
+      normalizedText += ' ';
+      positions.push({ node, offset: 0 });
+    }
+    for (let offset = 0; offset < value.length; offset += 1) {
+      const character = value[offset];
+      if (!/[\p{L}\p{N}]/u.test(character)) {
+        if (normalizedText && normalizedText.at(-1) !== ' ') pendingSpace = { node, offset };
+        continue;
+      }
+      if (pendingSpace) { normalizedText += ' '; positions.push(pendingSpace); pendingSpace = null; }
+      normalizedText += character.toLocaleLowerCase();
+      positions.push({ node, offset });
+    }
+  });
+  const lowerText = normalizedText;
+  const hostRect = host.getBoundingClientRect();
+  const overlay = document.createElement('div');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.setAttribute('data-source-highlight-layer', 'true');
+  overlay.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2;';
+  let highlighted = 0;
+  const ranges: { start: number; end: number }[] = [];
+  searchablePhrases.forEach((phrase) => {
+    const target = phrase;
+    let offset = lowerText.indexOf(target);
+    while (offset >= 0 && highlighted < 12) {
+      const end = offset + target.length;
+      if (!ranges.some((range) => offset < range.end && end > range.start)) ranges.push({ start: offset, end });
+      offset = lowerText.indexOf(target, end);
+    }
+  });
+  ranges.slice(0, 12).forEach(({ start, end }) => {
+    const first = positions[start];
+    const last = positions[end - 1];
+    if (!first || !last) return;
+    const range = document.createRange();
+    range.setStart(first.node, first.offset);
+    range.setEnd(last.node, last.offset + 1);
+    [...range.getClientRects()].forEach((rect) => {
+      if (!rect.width || !rect.height) return;
+      const mark = document.createElement('div');
+      mark.style.cssText = `position:absolute;left:${rect.left - hostRect.left}px;top:${rect.top - hostRect.top}px;width:${rect.width}px;height:${rect.height}px;border-radius:2px;background:rgba(255,211,62,.46);mix-blend-mode:multiply;`;
+      overlay.appendChild(mark);
+      highlighted += 1;
+    });
+  });
+  if (!highlighted) {
+    const stopWords = new Set('this that with from into within their there about which while where when have has were will your does been being chapter explores foundations supported alongside remarkable'.split(' '));
+    const contextTerms = [...new Set(searchablePhrases.flatMap((phrase) => phrase.split(' ')).filter((term) => term.length > 3 && !stopWords.has(term)))];
+    const textElements = [...textRoot.querySelectorAll('span, text')].map((element) => {
+      const elementText = normalizeForSearch(element.textContent || '');
+      const rect = element.getBoundingClientRect();
+      return { element, rect, terms: new Set(elementText.split(' ').filter((term) => contextTerms.includes(term))) };
+    }).filter(({ rect, terms }) => rect.width > 0 && rect.height > 0 && terms.size > 0).sort((left, right) => left.rect.top - right.rect.top || left.rect.left - right.rect.left);
+    const lines: { top: number; terms: Set<string>; elements: typeof textElements }[] = [];
+    textElements.forEach((item) => {
+      let line = lines.find((candidate) => Math.abs(candidate.top - item.rect.top) < Math.max(4, item.rect.height * 0.22));
+      if (!line) { line = { top: item.rect.top, terms: new Set(), elements: [] }; lines.push(line); }
+      item.terms.forEach((term) => line!.terms.add(term));
+      line.elements.push(item);
+    });
+    lines.sort((left, right) => left.top - right.top);
+    let bestLines = lines.slice(0, 2);
+    let bestScore = -1;
+    for (let index = 0; index < Math.max(1, lines.length - 1); index += 1) {
+      const windowLines = lines.slice(index, index + 2);
+      const score = new Set(windowLines.flatMap((line) => [...line.terms])).size;
+      if (score > bestScore) { bestScore = score; bestLines = windowLines; }
+    }
+    bestLines.flatMap((line) => line.elements).forEach(({ rect }) => {
+      const mark = document.createElement('div');
+      mark.style.cssText = `position:absolute;left:${rect.left - hostRect.left}px;top:${rect.top - hostRect.top}px;width:${rect.width}px;height:${rect.height}px;border-radius:2px;background:rgba(255,211,62,.42);mix-blend-mode:multiply;`;
+      overlay.appendChild(mark);
+      highlighted += 1;
+    });
+  }
+  if (highlighted) host.appendChild(overlay);
+}
+
+function findRelevantEvidence(passage: string, question: string) {
+  const stopWords = new Set('what which where when does did is are the a an and or in on of to for from with into this that about your their they them have has was were complete idea key fill blank'.split(' '));
+  const queryTerms = [...new Set((question.toLocaleLowerCase().match(/[a-z0-9]+/g) || []).filter((term) => term.length > 2 && !stopWords.has(term)))];
+  const chunks = (passage.match(/[^.!?]+(?:[.!?]+|$)/g) || [passage]).map((chunk) => chunk.trim()).filter(Boolean);
+  const scored = chunks.map((chunk, index) => {
+    const text = chunk.toLocaleLowerCase();
+    const score = queryTerms.reduce((total, term) => total + (new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text) ? 1 : 0), 0);
+    return { chunk, index, score };
+  }).sort((left, right) => right.score - left.score || left.index - right.index);
+  const best = scored[0]?.chunk || passage.trim();
+  if (best.length <= 360) return best;
+  const bestText = best.toLocaleLowerCase();
+  const firstTerm = queryTerms.find((term) => bestText.includes(term));
+  const matchIndex = firstTerm ? bestText.indexOf(firstTerm) : 0;
+  let start = Math.max(0, matchIndex - 130);
+  let end = Math.min(best.length, start + 360);
+  if (start > 0) { const boundary = best.indexOf(' ', start); if (boundary > 0 && boundary < start + 40) start = boundary + 1; }
+  if (end < best.length) { const boundary = best.lastIndexOf(' ', end); if (boundary > start) end = boundary; }
+  return best.slice(start, end).trim();
+}
+
 function underlineVectorMatches(textRoot: Element, highlightTerms: string[]) {
   const usableTerms = [...new Set(highlightTerms.map((term) => term.trim()).filter((term) => term.length > 2))].sort((a, b) => b.length - a.length);
   if (!usableTerms.length) return;
@@ -420,10 +575,11 @@ function sanitizePresentationSvg(svg: SVGSVGElement) {
   });
 }
 
-function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fallbackText }: { fileId: string; fileName: string; pageIndex: number; highlightTerms: string[]; fallbackText: string }) {
+function RenderedPagePreview({ fileId, fileName, pageIndex, highlightPhrases, fallbackText }: { fileId: string; fileName: string; pageIndex: number; highlightPhrases: string[]; fallbackText: string }) {
   const hostRef = useRef<React.ComponentRef<typeof View> | null>(null);
   const [error, setError] = useState('');
-  const normalizedTerms = highlightTerms.join('|');
+  const [showFallbackText, setShowFallbackText] = useState(false);
+  const normalizedPhrases = highlightPhrases.join('|');
 
   useEffect(() => {
     const host = hostRef.current as unknown as HTMLDivElement | null;
@@ -437,8 +593,9 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
     let pdfObserver: ResizeObserver | null = null;
     let pdfResizeListener: (() => void) | null = null;
     let renderGeneration = 0;
-    const termsForPage = normalizedTerms ? normalizedTerms.split('|').filter(Boolean) : [];
+    const phrasesForPage = normalizedPhrases ? normalizedPhrases.split('|').filter(Boolean) : [];
     setError('');
+    setShowFallbackText(false);
     host.replaceChildren();
     host.style.position = 'relative';
     host.style.width = '100%';
@@ -464,9 +621,6 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           if (parsed.querySelector('parsererror')) throw new Error('This slide could not be rendered.');
           const svg = parsed.documentElement as unknown as SVGSVGElement;
           sanitizePresentationSvg(svg);
-          const foreignObjects = [...svg.querySelectorAll('foreignObject')];
-          foreignObjects.forEach((foreignObject) => wrapMatchedWords(foreignObject, termsForPage, 'slide'));
-          underlineVectorMatches(svg, termsForPage);
           svg.setAttribute('width', '100%');
           svg.setAttribute('height', '100%');
           svg.style.display = 'block';
@@ -476,6 +630,13 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
           host.style.aspectRatio = `${presentation.width} / ${presentation.height}`;
           host.style.height = 'auto';
           host.replaceChildren(document.importNode(svg, true));
+          const renderedSvg = host.querySelector('svg');
+          if (renderedSvg) {
+            const drawHighlights = () => highlightPdfPhrases(host, renderedSvg, phrasesForPage);
+            pdfObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(drawHighlights) : null;
+            pdfObserver?.observe(host);
+            requestAnimationFrame(drawHighlights);
+          }
           setError('');
           return;
         }
@@ -524,7 +685,7 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
             activeTextLayer = textLayer;
             await textLayer.render();
             if (cancelled || generation !== renderGeneration) return;
-            wrapMatchedWords(textContainer, termsForPage, 'pdf');
+            highlightPdfPhrases(host, textContainer, phrasesForPage);
             setError('');
           } catch (renderError) {
             if (renderGeneration === generation && !cancelled && !(renderError instanceof Error && renderError.name === 'RenderingCancelledException')) throw renderError;
@@ -551,9 +712,9 @@ function RenderedPagePreview({ fileId, fileName, pageIndex, highlightTerms, fall
       disposePresentation?.();
       host.replaceChildren();
     };
-  }, [fileId, fileName, pageIndex, normalizedTerms]);
+  }, [fileId, fileName, pageIndex, normalizedPhrases]);
 
-  return <View style={{ gap: 8 }}><View ref={hostRef} accessibilityLabel={`Original page preview for ${fileName}, page ${pageIndex + 1}`} style={{ width: '100%', aspectRatio: 1.45, minHeight: 180, borderWidth: 1, borderColor: 'rgba(20,50,35,0.24)', borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff' }} />{!!error && <View style={{ gap: 7 }}><Text style={{ color: '#ffe9a0', fontSize: 12, lineHeight: 18 }}>{error} Showing the extracted text below instead.</Text><Text style={{ color: '#20372c', fontSize: 14, lineHeight: 21, backgroundColor: '#fffdf3', padding: 12, borderRadius: 8 }}>{fallbackText || 'No selectable text was found on this page. You can still view the original page above.'}</Text></View>}</View>;
+  return <View style={{ gap: 8 }}><View ref={hostRef} accessibilityLabel={`Original page preview for ${fileName}, page ${pageIndex + 1}`} style={{ width: '100%', aspectRatio: 1.45, minHeight: 180, borderWidth: 1, borderColor: 'rgba(20,50,35,0.24)', borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff' }} />{!!error && <View style={{ gap: 7 }}><Text style={{ color: '#ffe9a0', fontSize: 12, lineHeight: 18 }}>Could not open the original page in this browser. {error}</Text>{!!fallbackText && <><Pressable accessibilityRole="button" accessibilityState={{ expanded: showFallbackText }} onPress={() => setShowFallbackText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start' }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showFallbackText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable>{showFallbackText && <Text style={{ color: '#20372c', fontSize: 14, lineHeight: 21, backgroundColor: '#fffdf3', padding: 12, borderRadius: 8 }}>{fallbackText}</Text>}</>}</View>}</View>;
 }
 
 export default function App() {
@@ -577,9 +738,12 @@ export default function App() {
   const [showMatchReview, setShowMatchReview] = useState(false);
   const [expandedMatchIndex, setExpandedMatchIndex] = useState<number | null>(null);
   const [studyFormat, setStudyFormat] = useState<'flashcards' | 'qa' | 'read'>('qa');
+  const [readMaterialIndex, setReadMaterialIndex] = useState(0);
   const [flashcardRevealed, setFlashcardRevealed] = useState(false);
+  const [showExtractedText, setShowExtractedText] = useState(false);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
+  const [sourceCheckPageIndex, setSourceCheckPageIndex] = useState(0);
   const [sourceReader, setSourceReader] = useState<SourceReader | null>(null);
   const [sourceScope, setSourceScope] = useState<'subject' | 'file' | 'notes' | 'selected'>('subject');
   const [newSubjectName, setNewSubjectName] = useState('');
@@ -618,10 +782,17 @@ export default function App() {
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    try {
-      const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem(legacyStorageKey);
-      if (raw) {
-        const saved = JSON.parse(raw) as Partial<SavedWorkspace>;
+    let cancelled = false;
+    const hydrateWorkspace = async () => {
+      try {
+        let saved: Partial<SavedWorkspace> | null = null;
+        try { saved = await loadWorkspaceSnapshot(); } catch { /* Fall back to the previous browser save if IndexedDB is unavailable. */ }
+        if (!saved) {
+          const raw = window.localStorage.getItem(storageKey) || window.localStorage.getItem(legacyStorageKey);
+          if (raw) saved = JSON.parse(raw) as Partial<SavedWorkspace>;
+        }
+        if (cancelled) return;
+        if (saved) {
         if ((saved.version === 1 || saved.version === 2) && typeof saved.notes === 'string' && typeof saved.questionsText === 'string') {
           setNotes(saved.notes);
           setQuestionsText(saved.questionsText);
@@ -643,22 +814,21 @@ export default function App() {
           }
         }
       }
-    } catch {
-      // Keep the in-memory demo usable if browser storage is disabled or unreadable.
-    } finally {
-      setStorageReady(true);
-    }
+      } catch { /* Keep the in-memory demo usable if browser storage is disabled or unreadable. */ }
+      finally { if (!cancelled) setStorageReady(true); }
+    };
+    void hydrateWorkspace();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || !storageReady) return;
-    try {
-      const savedSubjects = subjects.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject);
-      const saved: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: savedSubjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope };
-      window.localStorage.setItem(storageKey, JSON.stringify(saved));
-    } catch {
-      setNotice('Browser storage is full or unavailable. Remove a large file or shorten your materials, then try again.');
-    }
+    const savedSubjects = subjects.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject);
+    const saved: SavedWorkspace = { version: 2, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects: savedSubjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope };
+    const timer = window.setTimeout(() => {
+    void saveWorkspaceSnapshot(saved).catch((error) => setNotice(`Browser storage could not save this workspace${error instanceof Error ? `: ${error.message}` : ''}. Download a backup before closing this tab.`));
+    }, 350);
+    return () => window.clearTimeout(timer);
   }, [storageReady, notes, questionsText, demoMaterial, matches, attempted, correct, history, subjects, activeSubjectId, selectedSourceId, selectedSourceIds, sourceScope]);
 
   useEffect(() => {
@@ -769,6 +939,9 @@ export default function App() {
   }, []);
 
   const activeSubject = subjects.find((subject) => subject.id === activeSubjectId) || null;
+  const sourceFiles = activeSubject?.files.filter((file) => file.role === 'source') || [];
+  const visibleSourceIndex = Math.max(0, sourceFiles.findIndex((file) => file.id === previewSourceId));
+  const visibleSourceFile = sourceFiles[visibleSourceIndex] || null;
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
   const fileSegments = (file: StudyFile) => (file.segments?.length ? file.segments : asStudySegments(file.text, file.name)).map((segment) => ({ ...segment, sourceFileId: file.id }));
   const selectedStudyFiles = activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)) || [];
@@ -793,8 +966,8 @@ export default function App() {
         <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>{/\.pptx?$/i.test(file.name) ? 'SLIDE PREVIEW' : 'PDF PAGE PREVIEW'} · ORIGINAL LAYOUT</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 16, marginTop: 4 }}>{/\.pptx?$/i.test(file.name) ? `Slide ${originalPageNumber || slideIndex + 1} of ${slides.length}` : `${slide.label.split(' · ').slice(-1)[0]} · ${slideIndex + 1} of ${slides.length}`}</Text></View>
         <View style={{ flexDirection: 'row', gap: 7 }}><ActionButton compact secondary label="← Previous" onPress={() => setPreviewSlideIndex((index) => Math.max(0, index - 1))} /><ActionButton compact secondary label="Next →" onPress={() => setPreviewSlideIndex((index) => Math.min(slides.length - 1, index + 1))} /></View>
       </View>
-      <RenderedPagePreview fileId={file.id} fileName={file.name} pageIndex={renderedPageIndex} highlightTerms={[]} fallbackText={slide.text ? `${slide.label}\n${slide.text}` : ''} />
-      {!!slide.text && <View style={{ borderLeftWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.025)', padding: 12, borderRadius: 8 }}><Text style={styles.label}>EXTRACTED TEXT · ORIGINAL ORDER</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 22, marginTop: 7 }}>{slide.text}</Text></View>}
+      <RenderedPagePreview fileId={file.id} fileName={file.name} pageIndex={renderedPageIndex} highlightPhrases={[]} fallbackText={slide.text ? `${slide.label}\n${slide.text}` : ''} />
+      {!!slide.text && <View style={{ borderLeftWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.025)', paddingHorizontal: 12, borderRadius: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 42, justifyContent: 'center', alignSelf: 'flex-start' }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 22, paddingBottom: 12 }}>{slide.text}</Text>}</View>}
       {!!linkedQuestions.length && <View style={{ gap: 7 }}><Text style={styles.label}>LINKED QUESTIONS</Text>{linkedQuestions.slice(0, 3).map(({ question, match }, index) => <View key={`${question}-${index}`} style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(33,129,91,0.14)', borderWidth: 1, borderColor: 'rgba(90,210,141,0.22)' }}><Text style={{ color: '#dff8e7', fontSize: 13, fontWeight: '700' }}>{question}</Text><Text style={[styles.small, { marginTop: 3 }]}>{match.overlap} shared terms</Text></View>)}</View>}
       {slideSuggestion && <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><Text style={[styles.body, { flex: 1, color: '#dfe9e3' }]}>Draft: {slideSuggestion}</Text><ActionButton compact secondary label={questionList.includes(slideSuggestion) ? 'Already added' : 'Add question'} onPress={addSuggestedQuestion} /></View>}
     </View>;
@@ -836,6 +1009,64 @@ export default function App() {
   }));
   const clearMatchSource = (question: string) => setMatches((previous) => previous.map((match) => match.question === question ? { ...match, passage: 'No source link selected. Review manually or choose a passage.', passageIndex: null, sourceLabel: undefined, overlap: 0, manual: true } : match));
   const findMatchSourceFile = (match: Match) => activeSubject?.files.find((file) => file.role === 'source' && (file.id === match.sourceFileId || (!!match.sourceLabel && match.sourceLabel.startsWith(`${file.name} ·`)))) || null;
+  const currentFlashcardQuestion = questionList[questionIndex] || '';
+  const currentFlashcardMatch = matches.find((match) => match.question === currentFlashcardQuestion) || null;
+  const currentFlashcardFile = currentFlashcardMatch ? findMatchSourceFile(currentFlashcardMatch) : null;
+  const flashcardEvidence = currentFlashcardMatch ? findRelevantEvidence(currentFlashcardMatch.passage, currentFlashcardQuestion) : '';
+  const flashcardPageFromMatch = Number(currentFlashcardMatch?.sourceLabel?.match(/(?:page|slide)\s+(\d+)/i)?.[1] || 1) - 1;
+  const flashcardPageCount = currentFlashcardFile ? fileSegments(currentFlashcardFile).length : 0;
+  const flashcardPageSegment = currentFlashcardFile ? fileSegments(currentFlashcardFile)[sourceCheckPageIndex] : null;
+
+  useEffect(() => { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); }, [currentFlashcardQuestion, currentFlashcardMatch?.sourceLabel]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const pageFile = page === 'study' && studyFormat === 'flashcards' && flashcardRevealed ? currentFlashcardFile : page === 'study' && studyFormat === 'read' ? selectedStudyFiles[readMaterialIndex] || null : page === 'import' && materialsTab === 'sources' ? visibleSourceFile : null;
+    if (!pageFile || !/\.(?:pdf|pptx?)$/i.test(pageFile.name)) return;
+    const pageCount = page === 'study' && studyFormat === 'flashcards' ? flashcardPageCount : fileSegments(pageFile).length;
+    if (pageCount < 2) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      if (page === 'study' && studyFormat === 'flashcards') setSourceCheckPageIndex((index) => Math.max(0, Math.min(pageCount - 1, index + (event.key === 'ArrowRight' ? 1 : -1))));
+      else setPreviewSlideIndex((index) => Math.max(0, Math.min(pageCount - 1, index + (event.key === 'ArrowRight' ? 1 : -1))));
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [page, studyFormat, flashcardRevealed, currentFlashcardFile?.id, flashcardPageCount, materialsTab, visibleSourceFile?.id, readMaterialIndex, selectedStudyFiles.map((file) => file.id).join('|')]);
+
+  const moveSourceFile = (fileId: string, direction: -1 | 1) => {
+    setSubjects((previous) => previous.map((subject) => {
+      if (subject.id !== activeSubjectId) return subject;
+      const files = [...subject.files];
+      const sourcePositions = files.flatMap((file, index) => file.role === 'source' ? [index] : []);
+      const sourceIndex = sourcePositions.findIndex((position) => files[position].id === fileId);
+      const nextSourceIndex = sourceIndex + direction;
+      if (sourceIndex < 0 || nextSourceIndex < 0 || nextSourceIndex >= sourcePositions.length) return subject;
+      const currentPosition = sourcePositions[sourceIndex];
+      const nextPosition = sourcePositions[nextSourceIndex];
+      [files[currentPosition], files[nextPosition]] = [files[nextPosition], files[currentPosition]];
+      return { ...subject, files };
+    }));
+  };
+
+  const navigateSourceFile = (direction: -1 | 1) => {
+    const nextIndex = Math.max(0, Math.min(sourceFiles.length - 1, visibleSourceIndex + direction));
+    const nextFile = sourceFiles[nextIndex];
+    if (!nextFile) return;
+    setPreviewSourceId(nextFile.id);
+    setPreviewSlideIndex(0);
+    setShowExtractedText(false);
+  };
+
+  const navigateReadMaterial = (direction: -1 | 1) => {
+    setReadMaterialIndex((index) => Math.max(0, Math.min(selectedStudyFiles.length - 1, index + direction)));
+    setPreviewSlideIndex(0);
+    setShowExtractedText(false);
+  };
+
   const openSourceLocation = async (match: Match) => {
     const sourceFile = findMatchSourceFile(match);
     if (!sourceFile || !match.sourceLabel) {
@@ -884,32 +1115,60 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         return;
       }
       const picker = document.createElement('input');
-      picker.type = 'file'; picker.accept = '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
-      const file = await new Promise<File | null>((resolve) => {
-        picker.addEventListener('change', () => resolve(picker.files?.[0] || null), { once: true });
-        picker.addEventListener('cancel', () => resolve(null), { once: true });
+      picker.type = 'file'; picker.multiple = true; picker.accept = '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
+      const files = await new Promise<File[]>((resolve) => {
+        picker.addEventListener('change', () => resolve(Array.from(picker.files || [])), { once: true });
+        picker.addEventListener('cancel', () => resolve([]), { once: true });
         picker.click();
       });
-      if (!file) return;
-      if (file.size > 20 * 1024 * 1024) throw new Error('Files must be 20 MB or smaller.');
-      const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const extracted = (await extractDocumentText(file)).map((segment) => ({ ...segment, sourceFileId: fileId }));
-      const content = extracted.map((segment) => segment.text).join('\n\n').trim();
-      const canStudyVisually = kind === 'module' && /\.(?:pdf|pptx?)$/i.test(file.name);
-      if (!content && !canStudyVisually) throw new Error('No selectable text was found. Scanned PDFs can still be previewed, but need OCR before automatic question matching.');
-      const savedCharacters = subjects.reduce((total, subject) => total + subject.notes.length + subject.questionsText.length + subject.files.reduce((sum, savedFile) => sum + savedFile.text.length, 0), 0) + notes.length + questionsText.length;
-      if (content.length > 350_000 || savedCharacters + content.length > 450_000) throw new Error('This file has too much extracted text for browser storage. Split it into shorter files or remove older files first.');
-      const added: StudyFile = { id: fileId, name: file.name, text: content, segments: extracted, role: kind === 'module' ? 'source' : 'questions' };
-      try { await saveOriginalDocument({ id: fileId, name: file.name, type: file.type || 'application/octet-stream', blob: file.slice(0, file.size, file.type || 'application/octet-stream') }); }
-      catch { notify('The extracted text was saved, but the original file could not be kept by this browser. You can still study its text.'); }
-      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, added] } : subject));
+      if (!files.length) return;
+      const addedFiles: StudyFile[] = [];
+      const failures: string[] = [];
+      let originalSaveFailures = 0;
+      for (const [index, file] of files.entries()) {
+        setNotice(`Reading ${index + 1} of ${files.length}: ${file.name}`);
+        try {
+          if (file.size > 20 * 1024 * 1024) throw new Error('over 20 MB');
+          const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const extracted = (await extractDocumentText(file)).map((segment) => ({ ...segment, sourceFileId: fileId }));
+          const content = extracted.map((segment) => segment.text).join('\n\n').trim();
+          const canStudyVisually = kind === 'module' && /\.(?:pdf|pptx?)$/i.test(file.name);
+          if (!content && !canStudyVisually) throw new Error('no selectable text was found');
+          if (content.length > 10_000_000) throw new Error('extracts to over 10 MB of text; split it into smaller files');
+          const added: StudyFile = { id: fileId, name: file.name, text: content, segments: extracted, role: kind === 'module' ? 'source' : 'questions' };
+          try { await saveOriginalDocument({ id: fileId, name: file.name, type: file.type || 'application/octet-stream', blob: file.slice(0, file.size, file.type || 'application/octet-stream') }); }
+          catch { originalSaveFailures += 1; }
+          addedFiles.push(added);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'could not be read';
+          failures.push(`${file.name}: ${reason}`);
+        }
+      }
+      if (!addedFiles.length) {
+        notify(`No files were added. ${failures.slice(0, 3).join(' · ')}`);
+        return;
+      }
+      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, ...addedFiles] } : subject));
       if (kind === 'module') {
-        setSelectedSourceId(added.id);
-        setSourceScope('file');
-        setMatches(buildMatches(extracted, questionList));
-      } else setQuestionsText(content);
+        const addedSourceFiles = addedFiles.filter((file) => file.role === 'source');
+        const nextSelectedIds = [...new Set([...selectedSourceIds, ...addedSourceFiles.map((file) => file.id)])];
+        const allSourceFiles = [...activeSubject.files.filter((file) => file.role === 'source'), ...addedSourceFiles];
+        const nextSegments = [...(nextSelectedIds.includes('__notes__') ? asStudySegments(notes) : []), ...allSourceFiles.filter((file) => nextSelectedIds.includes(file.id)).flatMap(fileSegments)];
+        setSelectedSourceId(null);
+        setSelectedSourceIds(nextSelectedIds);
+        setSourceScope('selected');
+        setMatches(buildMatches(nextSegments, questionList));
+        setPreviewSourceId(addedSourceFiles.at(-1)?.id || null);
+        setPreviewSlideIndex(0);
+        setShowExtractedText(false);
+      } else {
+        setQuestionsText(addedFiles.map((file) => file.text).filter(Boolean).join('\n\n'));
+      }
       setDemoMaterial(false);
-      notify(content ? `${file.name} was added to ${activeSubject.name}. The text was extracted in this browser.` : `${file.name} was added to ${activeSubject.name}. Its pages are ready to preview; OCR is needed for text matching.`);
+      const visualOnlyCount = addedFiles.filter((file) => !file.text.trim()).length;
+      const success = `${addedFiles.length} ${kind === 'module' ? 'source file' : 'question file'}${addedFiles.length === 1 ? '' : 's'} added to ${activeSubject.name}.`;
+      const details = [visualOnlyCount ? `${visualOnlyCount} need OCR for text matching` : '', originalSaveFailures ? `${originalSaveFailures} original${originalSaveFailures === 1 ? '' : 's'} could not be kept for page preview` : '', failures.length ? `${failures.length} skipped: ${failures.slice(0, 2).join(' · ')}` : ''].filter(Boolean).join(' ');
+      notify(`${success} ${details}`.trim());
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not read that file. Try pasting the text instead.');
     } finally {
@@ -972,8 +1231,6 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       if (manifest.format !== 'recall-loop-backup' || manifest.version !== 1 || !incoming || !Array.isArray(incoming.subjects)) throw new Error('This backup format is invalid or unsupported.');
       const validSubjects = incoming.subjects.every((subject) => !!subject && typeof subject.id === 'string' && typeof subject.name === 'string' && typeof subject.notes === 'string' && typeof subject.questionsText === 'string' && Array.isArray(subject.files) && subject.files.every((studyFile) => !!studyFile && typeof studyFile.id === 'string' && typeof studyFile.name === 'string' && typeof studyFile.text === 'string' && (studyFile.role === 'source' || studyFile.role === 'questions') && (studyFile.segments === undefined || (Array.isArray(studyFile.segments) && studyFile.segments.every((segment) => !!segment && typeof segment.label === 'string' && typeof segment.text === 'string')))));
       if (!validSubjects) throw new Error('The backup contains incomplete folder or file data. Nothing was restored.');
-      const textSize = incoming.subjects.reduce((total, subject) => total + subject.notes.length + subject.questionsText.length + subject.files.reduce((sum, studyFile) => sum + studyFile.text.length, 0), 0);
-      if (textSize > 450_000) throw new Error('This backup exceeds the current browser workspace text limit. Nothing was restored.');
       const originals: OriginalDocument[] = [];
       let restoredOriginalBytes = 0;
       for (const item of manifest.originals || []) {
@@ -1047,7 +1304,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const beginStudyFormat = (format: 'flashcards' | 'qa' | 'read') => {
     if (!selectedSourceIds.length) { notify('Select at least one source to study.'); return; }
-    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false);
+    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); setReadMaterialIndex(0); setPreviewSlideIndex(0);
     const sourceSegments = [...(selectedSourceIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)).flatMap(fileSegments) || [])];
     const sessionQuestions = questionList.length ? questionList : format === 'read' ? [] : draftPracticeQuestions(sourceSegments.map((segment) => segment.text).join('\n\n'));
     if (!questionList.length && format !== 'read' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
@@ -1137,8 +1394,12 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const clearWorkspace = () => {
     setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]); setSelectedSourceIds([]);
-    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setPreviewSourceId(null); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
-    if (Platform.OS === 'web') void clearOriginalDocuments().catch(() => undefined);
+    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setPreviewSlideIndex(0); setShowExtractedText(false); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
+    if (Platform.OS === 'web') {
+      window.localStorage.removeItem(storageKey); window.localStorage.removeItem(legacyStorageKey);
+      void clearOriginalDocuments().catch(() => undefined);
+      void clearWorkspaceSnapshot().catch(() => undefined);
+    }
     setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
   };
 
@@ -1272,12 +1533,16 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{([['notes', 'Subject notes'], ['questions', 'Questions already asked']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: addTab === id }} onPress={() => setAddTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 18, backgroundColor: addTab === id ? 'rgba(33,129,91,0.3)' : 'rgba(255,255,255,0.04)' }}><Text style={{ color: addTab === id ? '#eaffef' : palette.muted, fontWeight: '700' }}>{label}</Text></Pressable>)}</View>
       {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><ActionButton compact secondary label="Upload question file" onPress={() => importFile('questions')} /></View><TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary disabled={aiBusy} label={aiBusy ? 'Writing questions…' : 'Draft practice questions with AI'} onPress={() => void generateQuestions()} /></View>}
       </View> : materialsTab === 'summary' ? <View style={{ gap: 14 }}><StudySetStudio subjectName={activeSubject.name} materialCount={aiSelectedSourceCount} materialText={selectedAiMaterialText} sourceHash={aiStudySourceHash} questions={questionList} apiKeyConnected={!!apiKey} providerName={apiKey ? connectedProviderName : aiProviderName} studySet={activeSubject.aiStudySet} onConnectKey={() => setShowApiKeyModal(true)} onGenerate={generateStudySet} onSave={(studySet) => setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, aiStudySet: studySet } : subject))} /><View style={[styles.card, { gap: 11 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}><View><Text style={styles.label}>AI SUMMARY</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Key ideas and terms</Text></View><ActionButton compact secondary disabled={aiBusy || selectedAiMaterialText.trim().length < 40} label={aiBusy ? 'Working…' : aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? 'Refresh' : apiKey ? 'Generate' : 'Connect AI'} onPress={() => void generateSummary()} /></View>{aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? <><Text style={{ color: '#d9e3de', fontSize: 14, lineHeight: 21 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 6 }}>{aiSummary.result.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d9e3de' }]}>• {point}</Text>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 5 }}>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.small}>Generated from the sources currently selected above.</Text>}</View></View> : <View style={{ gap: 15 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}><ActionButton label={busy ? 'Reading file…' : 'Add source file'} onPress={() => importFile('module')} /></View>
+        <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><Text style={styles.body}>{sourceFiles.length ? `${sourceFiles.length} source${sourceFiles.length === 1 ? '' : 's'}` : 'Add lecture files, then choose which to study.'}</Text><ActionButton label={busy ? 'Reading files…' : 'Add source files'} onPress={() => importFile('module')} /></View>
         {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
-        {activeSubject.files.filter((file) => file.role === 'source').map((file) => <View key={file.id} style={[styles.card, { gap: 10, padding: 15 }]}>
-          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 10 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(file.id) }} onPress={() => toggleStudySource(file.id)} style={{ flex: 1, minWidth: 170, flexDirection: 'row', alignItems: 'center', gap: 11, minHeight: 44 }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(file.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(file.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(file.id) ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text></View></Pressable><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}><ActionButton compact secondary label={previewSourceId === file.id ? 'Hide preview' : 'Preview'} onPress={() => { setPreviewSlideIndex(0); setPreviewSourceId((previous) => previous === file.id ? null : file.id); }} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View></View>
-          {previewSourceId === file.id && <View style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 10, gap: 9 }}><Text style={styles.label}>SOURCE PREVIEW</Text>{lecturePreview(file)}</View>}
-        </View>)}
+        {!!visibleSourceFile && <View style={[styles.card, { gap: 12, padding: compact ? 14 : 18 }]}>
+          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 10 }}>
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 11 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(visibleSourceFile.id) }} accessibilityLabel={`Select ${visibleSourceFile.name} for study`} onPress={() => toggleStudySource(visibleSourceFile.id)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(visibleSourceFile.id) ? '✓' : ''}</Text></View></Pressable><View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>MATERIAL {visibleSourceIndex + 1} OF {sourceFiles.length}</Text><Text numberOfLines={2} style={{ color: palette.ink, fontWeight: '800', fontSize: 16 }}>{visibleSourceFile.name}</Text></View></View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5 }}><Pressable accessibilityRole="button" accessibilityLabel="Move source earlier" disabled={visibleSourceIndex === 0} onPress={() => moveSourceFile(visibleSourceFile.id, -1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: visibleSourceIndex === 0 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↑</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Move source later" disabled={visibleSourceIndex === sourceFiles.length - 1} onPress={() => moveSourceFile(visibleSourceFile.id, 1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: visibleSourceIndex === sourceFiles.length - 1 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↓</Text></Pressable><ActionButton compact secondary label="Delete" onPress={() => removeSubjectFile(visibleSourceFile.id)} /></View>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><ActionButton compact secondary disabled={visibleSourceIndex === 0} label="← Previous material" onPress={() => navigateSourceFile(-1)} /><Text style={styles.small}>{selectedSourceIds.includes(visibleSourceFile.id) ? 'Selected for study' : 'Not selected'}</Text><ActionButton compact secondary disabled={visibleSourceIndex >= sourceFiles.length - 1} label="Next material →" onPress={() => navigateSourceFile(1)} /></View>
+          <View style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 9 }}>{lecturePreview(visibleSourceFile)}</View>
+        </View>}
         {activeSubject.files.filter((file) => file.role === 'questions').map((file) => <View key={file.id} style={[styles.card, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: 15 }]}><View style={{ flex: 1, minWidth: 180 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Question file · {file.text.trim().split(/\s+/).length} words</Text></View><ActionButton compact secondary label="Load questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>)}
         {!notes.trim() && !activeSubject.files.some((file) => file.role === 'source' || file.role === 'questions') && <View style={[styles.card, { alignItems: 'center', paddingVertical: 35, gap: 8 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>No sources yet</Text><Text style={[styles.body, { textAlign: 'center' }]}>Upload lecture material or add subject notes to get started.</Text></View>}
         {(!!notes.trim() || activeSubject.files.some((file) => file.role === 'source')) && <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
@@ -1306,7 +1571,10 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const studyScreen = <View style={styles.content}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}><View><Text style={styles.label}>{mode.toUpperCase()} MODE · {displayModuleTitle.toUpperCase()}</Text><Text style={[styles.title, { marginTop: 7 }]}>{phase === 'module' ? 'Read the full module' : phase === 'diagnostic' ? 'Quick diagnostic' : phase === 'review' ? 'Targeted review' : 'Check what stuck'}</Text></View><ActionButton label="Exit session" secondary onPress={() => setPage('home')} /></View>
     <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>{Array.from({ length: phaseTotal }, (_, index) => <View key={index} style={{ height: 6, flex: 1, backgroundColor: index < phaseStep ? (index + 1 === phaseStep ? palette.yellow : palette.green) : palette.line, borderRadius: 5 }} />)}<Text style={styles.small}>{phaseStep} of {phaseTotal} · {phaseDescription}</Text></View>
-    {studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file) => <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>{file.name}</Text>{lecturePreview(file)}<Text style={styles.label}>EXTRACTED MATERIAL</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found. Use the original page preview above.'}</Text></View>)}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, questionList.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{questionList[questionIndex] || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: 15, gap: 8 }}><Text style={styles.label}>SOURCE TO CHECK</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 24 }}>{matches.find((match) => match.question === questionList[questionIndex])?.passage || sourceParagraphs[questionIndex % Math.max(sourceParagraphs.length, 1)]?.text || 'Review the selected source and write the answer in your own words.'}</Text></View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < questionList.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < questionList.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else setFlashcardRevealed(true); }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'review' || phase === 'module' ? reviewPanel : quizPanel}
+    {studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file, fileIndex) => fileIndex === readMaterialIndex ? <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><View><Text style={styles.label}>MATERIAL {fileIndex + 1} OF {selectedStudyFiles.length}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800', marginTop: 3 }}>{file.name}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary disabled={fileIndex <= 0} label="← Previous material" onPress={() => navigateReadMaterial(-1)} /><ActionButton compact secondary disabled={fileIndex >= selectedStudyFiles.length - 1} label="Next material →" onPress={() => navigateReadMaterial(1)} /></View></View>{lecturePreview(file)}<Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start' }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found.'}</Text>}</View> : null)}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, questionList.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{questionList[questionIndex] || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: compact ? 11 : 15, gap: 10 }}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 6 }}><View style={{ flex: 1 }}><Text style={styles.label}>{currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) ? 'ORIGINAL SOURCE' : 'SOURCE CONTEXT'}</Text><Text numberOfLines={1} style={{ color: palette.ink, fontWeight: '800', marginTop: 3 }}>{currentFlashcardFile?.name || currentFlashcardMatch?.sourceLabel || 'Selected study material'}</Text></View>{currentFlashcardMatch?.sourceLabel && <Text style={styles.small}>{currentFlashcardMatch.sourceLabel.split(' · ').slice(-1)[0]}</Text>}</View>
+      {currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) && <><RenderedPagePreview fileId={currentFlashcardFile.id} fileName={currentFlashcardFile.name} pageIndex={sourceCheckPageIndex} highlightPhrases={[flashcardEvidence]} fallbackText={flashcardPageSegment?.text || flashcardEvidence} /><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><ActionButton compact secondary disabled={sourceCheckPageIndex <= 0} label="← Page" onPress={() => setSourceCheckPageIndex((index) => Math.max(0, index - 1))} /><Text style={styles.small}>Page {sourceCheckPageIndex + 1} of {flashcardPageCount} · ← / → to flip</Text><ActionButton compact secondary disabled={sourceCheckPageIndex >= flashcardPageCount - 1} label="Page →" onPress={() => setSourceCheckPageIndex((index) => Math.min(flashcardPageCount - 1, index + 1))} /></View></>}
+      {!!flashcardEvidence && <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, paddingLeft: 10, paddingVertical: 4 }}><Text style={styles.label}>RELEVANT CONTEXT</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 21, marginTop: 4 }}>{flashcardEvidence}</Text></View>}
+      {!currentFlashcardFile && !flashcardEvidence && <Text style={styles.body}>Review the selected source and write the answer in your own words.</Text>}</View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < questionList.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < questionList.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); setFlashcardRevealed(true); } }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'review' || phase === 'module' ? reviewPanel : quizPanel}
   </View>;
 
   const readyCount = history.filter((attempt) => attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready').length;
@@ -1330,7 +1598,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <View style={styles.shell}>
       <View style={styles.main}>
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, backgroundColor: 'rgba(5,16,12,0.96)' }}><View style={[styles.inner, compact && { paddingHorizontal: 16 }]}>{fixedHeader}</View></View>
-        <ScrollView ref={scrollRef} style={{ flex: 1, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, paddingTop: compact ? 124 : 78, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
+        <ScrollView ref={scrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, width: '100%', maxWidth: '100%', paddingTop: compact ? 124 : 78, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
           <View testID="scroll-backdrop" pointerEvents="none" style={styles.scrollBackdrop}>
             <BlurTargetView ref={ambientRef} pointerEvents="none" style={styles.ambience}><View testID="ambient-glow-a" style={styles.glowA} /><View testID="ambient-glow-b" style={styles.glowB} /><View testID="ambient-glow-c" style={styles.glowC} /></BlurTargetView>
             <BlurView pointerEvents="none" blurTarget={ambientRef} intensity={62} tint="dark" blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : 'none'} style={styles.backgroundBlur} />
