@@ -1651,7 +1651,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
     setAiBusy(true);
     try {
-      const result = await draftQuestionsWithAI(apiKey, studySourceText, questionList, 8, apiKeyProvider || aiProvider);
+      const result = await draftQuestionsWithAI(apiKey, studySourceText, questionList, 8, apiKeyProvider || aiProvider, setNotice);
       const additions = result.questions.map((question) => question.trim()).filter((question) => question && !questionList.some((existing) => existing.toLowerCase() === question.toLowerCase()));
       if (!additions.length) { notify('AI could not find any new questions in these sources.'); return; }
       const updatedQuestions = [...questionList, ...additions];
@@ -1669,8 +1669,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (text.trim().length < 40) { notify('Add more source material for an AI overview.'); return; }
     setAiBusy(true);
     try {
-      const result = await summarizeWithAI(apiKey, text, subjectName, apiKeyProvider || aiProvider);
+      const result = await summarizeWithAI(apiKey, text, subjectName, apiKeyProvider || aiProvider, setNotice);
       setAiSummary({ subjectId: activeSubjectId || '', sourceHash, result });
+      setNotice('');
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not summarize these sources. Try again.');
     } finally { setAiBusy(false); }
@@ -1683,8 +1684,8 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (selectedAiMaterialText.trim().length < 40) throw new Error('Select source material with enough text to build a study set.');
     setAiBusy(true);
     try {
-      return await generateStudySetWithAI(apiKey, selectedAiMaterialText, activeSubject?.name || 'Study materials', questionList, aiStudySourceHash, apiKeyProvider || aiProvider);
-    } finally { setAiBusy(false); }
+      return await generateStudySetWithAI(apiKey, selectedAiMaterialText, activeSubject?.name || 'Study materials', questionList, aiStudySourceHash, apiKeyProvider || aiProvider, setNotice);
+    } finally { setAiBusy(false); setNotice(''); }
   };
 
   const startDiagnostic = () => { setStudyFormat('qa'); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
@@ -1695,7 +1696,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       try {
         if (apiKey && studySourceText.trim().length >= 40) {
           setAiBusy(true);
-          const result = await draftQuestionsWithAI(apiKey, studySourceText, [], 6, apiKeyProvider || aiProvider);
+          const result = await draftQuestionsWithAI(apiKey, studySourceText, [], 6, apiKeyProvider || aiProvider, setNotice);
           questions = result.questions.map((question) => question.trim()).filter(Boolean);
         }
       } catch (error) {
@@ -1708,7 +1709,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       }
     }
     if (!questions.length) { notify('Add questions or clearer source text before starting a quiz.'); return; }
-    setStudyFormat('qa'); setQuestionIndex(0); setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null);
+    setStudyFormat('qa'); setQuestionIndex(0); setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setNotice('');
   };
 
   const openQuestionReview = () => {
