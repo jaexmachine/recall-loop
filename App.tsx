@@ -30,7 +30,7 @@ type SourceReader = { title: string; location: string; text: string };
 type Subject = { id: string; name: string; notes: string; questionsText: string; files: StudyFile[]; aiStudySet?: AiStudySet };
 type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; selectedSourceIds?: string[]; sourceScope: 'subject' | 'file' | 'notes' | 'selected' };
 type Pace = 'cram' | 'steady' | 'deep';
-type Phase = 'module' | 'diagnostic' | 'review' | 'check';
+type Phase = 'overview' | 'module' | 'diagnostic' | 'review' | 'check';
 
 const storageKey = 'recall-loop.workspace.v2';
 const legacyStorageKey = 'recall-loop.workspace.v1';
@@ -946,12 +946,14 @@ export default function App() {
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
   const fileSegments = (file: StudyFile) => (file.segments?.length ? file.segments : asStudySegments(file.text, file.name)).map((segment) => ({ ...segment, sourceFileId: file.id }));
   const selectedStudyFiles = activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)) || [];
-  const lecturePreview = (file: StudyFile) => {
+  const lecturePreview = (file: StudyFile, focusQuestion?: string, emphasizeQuestionContext = false) => {
     const slides = fileSegments(file);
     const slideIndex = Math.min(previewSlideIndex, Math.max(0, slides.length - 1));
     const slide = slides[slideIndex];
     if (!slide) return null;
     const linkedQuestions = questionList.map((question) => ({ question, match: buildMatches([slide], [question])[0] })).filter(({ match }) => match.overlap > 0).sort((a, b) => b.match.overlap - a.match.overlap);
+    const visibleLinkedQuestions = focusQuestion ? linkedQuestions.filter(({ question }) => question === focusQuestion) : linkedQuestions;
+    const highlightedEvidence = emphasizeQuestionContext ? (focusQuestion ? linkedQuestions.filter(({ question }) => question === focusQuestion) : linkedQuestions.slice(0, 2)).map(({ question, match }) => findRelevantEvidence(match.passage, question)) : [];
     const slideSuggestion = draftPracticeQuestions(slide.text)[0];
     const originalPageNumber = Number(slide.label.match(/\bslide\s+(\d+)/i)?.[1] || slide.label.match(/\bpage\s+(\d+)/i)?.[1]);
     const renderedPageIndex = Number.isFinite(originalPageNumber) && originalPageNumber > 0 ? originalPageNumber - 1 : slideIndex;
@@ -967,9 +969,9 @@ export default function App() {
         <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>{/\.pptx?$/i.test(file.name) ? 'SLIDE PREVIEW' : 'PDF PAGE PREVIEW'} · ORIGINAL LAYOUT</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 16, marginTop: 4 }}>{/\.pptx?$/i.test(file.name) ? `Slide ${originalPageNumber || slideIndex + 1} of ${slides.length}` : `${slide.label.split(' · ').slice(-1)[0]} · ${slideIndex + 1} of ${slides.length}`}</Text></View>
         <View style={{ flexDirection: 'row', gap: 7 }}><ActionButton compact secondary label="← Previous" onPress={() => setPreviewSlideIndex((index) => Math.max(0, index - 1))} /><ActionButton compact secondary label="Next →" onPress={() => setPreviewSlideIndex((index) => Math.min(slides.length - 1, index + 1))} /></View>
       </View>
-      <RenderedPagePreview fileId={file.id} fileName={file.name} pageIndex={renderedPageIndex} highlightPhrases={[]} fallbackText={slide.text ? `${slide.label}\n${slide.text}` : ''} />
+      {/\.(?:pdf|pptx?)$/i.test(file.name) ? <RenderedPagePreview fileId={file.id} fileName={file.name} pageIndex={renderedPageIndex} highlightPhrases={highlightedEvidence} fallbackText={slide.text ? `${slide.label}\n${slide.text}` : ''} /> : <View style={{ borderRadius: 8, padding: 13, backgroundColor: '#f7f7ee' }}>{slide.text ? emphasizeQuestionContext ? highlightedPassage(slide.text, focusQuestion || linkedQuestions[0]?.question || '') : <Text style={{ color: '#20372c', fontSize: 15, lineHeight: 23 }}>{slide.text}</Text> : <Text style={{ color: '#20372c', fontSize: 15, lineHeight: 23 }}>No readable text on this page.</Text>}</View>}
       {!!slide.text && <View style={{ borderLeftWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.025)', paddingHorizontal: 12, borderRadius: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 42, justifyContent: 'center', alignSelf: 'flex-start' }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 22, paddingBottom: 12 }}>{slide.text}</Text>}</View>}
-      {!!linkedQuestions.length && <View style={{ gap: 7 }}><Text style={styles.label}>LINKED QUESTIONS</Text>{linkedQuestions.slice(0, 3).map(({ question, match }, index) => <View key={`${question}-${index}`} style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(33,129,91,0.14)', borderWidth: 1, borderColor: 'rgba(90,210,141,0.22)' }}><Text style={{ color: '#dff8e7', fontSize: 13, fontWeight: '700' }}>{question}</Text><Text style={[styles.small, { marginTop: 3 }]}>{match.overlap} shared terms</Text></View>)}</View>}
+      {!!visibleLinkedQuestions.length && <View style={{ gap: 7 }}><Text style={styles.label}>{focusQuestion ? 'QUESTION IN THIS MATERIAL' : 'QUESTIONS LINKED TO THIS PAGE'}</Text>{visibleLinkedQuestions.slice(0, 3).map(({ question }, index) => <View key={`${question}-${index}`} style={{ borderRadius: 9, padding: 10, backgroundColor: 'rgba(33,129,91,0.14)', borderWidth: 1, borderColor: 'rgba(90,210,141,0.22)' }}><Text style={{ color: '#dff8e7', fontSize: 13, fontWeight: '700' }}>{question}</Text></View>)}</View>}
       {slideSuggestion && <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><Text style={[styles.body, { flex: 1, color: '#dfe9e3' }]}>Draft: {slideSuggestion}</Text><ActionButton compact secondary label={questionList.includes(slideSuggestion) ? 'Already added' : 'Add question'} onPress={addSuggestedQuestion} /></View>}
     </View>;
   };
@@ -993,7 +995,7 @@ export default function App() {
   useEffect(() => { setAiFeedback(null); }, [currentQuestion]);
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
   const correctAnswer = currentDemoQuiz.correct;
-  const hasNextQuestion = mode !== 'cram' && questionIndex < questionList.length - 1;
+  const hasNextQuestion = questionIndex < questionList.length - 1;
   const sourceOptions = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label, sourceFileId: segment.sourceFileId }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   const moduleTitle = sourceScope === 'file' && selectedSource ? selectedSource.name.replace(/\.[^.]+$/, '') : activeSubject?.name || notes.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || 'Untitled module';
   const displayModuleTitle = demoMaterial ? 'Cellular respiration' : !hasStudyContent ? 'No study set yet' : moduleTitle.length > 52 ? `${moduleTitle.slice(0, 49)}…` : moduleTitle;
@@ -1326,8 +1328,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!questionList.length && format !== 'read' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
     setMatches(buildMatches(sourceSegments, sessionQuestions));
     if (format !== 'read' && !sessionQuestions.length) { notify('Add some questions or clearer source notes before starting practice.'); return; }
-    if (format === 'qa') { startStudy(selectedPace); return; }
-    setMode(selectedPace); setQuestionIndex(0); setPhase(format === 'read' ? 'module' : 'diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('study');
+    startStudy(selectedPace);
   };
 
   const activateSubjectFile = (file: StudyFile) => {
@@ -1374,17 +1375,19 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     } finally { setAiBusy(false); }
   };
 
-  const generateSummary = async () => {
+  const generateSummaryFor = async (text: string, subjectName: string, sourceHash: string) => {
     if (!apiKey) { setShowApiKeyModal(true); return; }
-    if (selectedAiMaterialText.trim().length < 40) { notify('Select source material first.'); return; }
+    if (text.trim().length < 40) { notify('Add more source material for an AI overview.'); return; }
     setAiBusy(true);
     try {
-      const result = await summarizeWithAI(apiKey, selectedAiMaterialText, activeSubject?.name || 'Study materials', apiKeyProvider || aiProvider);
-      setAiSummary({ subjectId: activeSubjectId || '', sourceHash: aiSourceHash, result });
+      const result = await summarizeWithAI(apiKey, text, subjectName, apiKeyProvider || aiProvider);
+      setAiSummary({ subjectId: activeSubjectId || '', sourceHash, result });
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not summarize these sources. Try again.');
     } finally { setAiBusy(false); }
   };
+
+  const generateSummary = async () => generateSummaryFor(selectedAiMaterialText, activeSubject?.name || 'Study materials', aiSourceHash);
 
   const generateStudySet = async () => {
     if (!apiKey) throw new Error(`Connect your ${aiProviderName} key to generate a study set.`);
@@ -1395,7 +1398,45 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     } finally { setAiBusy(false); }
   };
 
+  const startDiagnostic = () => { setStudyFormat('qa'); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
+  const startModuleReading = () => { setStudyFormat('read'); setReadMaterialIndex(0); setPreviewSlideIndex(0); setShowExtractedText(false); setPhase('module'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
+  const startQuiz = async () => {
+    let questions = questionList;
+    if (!questions.length) {
+      try {
+        if (apiKey && studySourceText.trim().length >= 40) {
+          setAiBusy(true);
+          const result = await draftQuestionsWithAI(apiKey, studySourceText, [], 6, apiKeyProvider || aiProvider);
+          questions = result.questions.map((question) => question.trim()).filter(Boolean);
+        }
+      } catch (error) {
+        notify(error instanceof Error ? error.message : 'Could not make a quiz. Try again.');
+      } finally { setAiBusy(false); }
+      if (!questions.length) questions = draftPracticeQuestions(studySourceText);
+      if (questions.length) {
+        setQuestionsText(questions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+        setMatches(buildMatches(studySourceSegments, questions));
+      }
+    }
+    if (!questions.length) { notify('Add questions or clearer source text before starting a quiz.'); return; }
+    setStudyFormat('qa'); setQuestionIndex(0); setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null);
+  };
+
+  const openQuestionReview = () => {
+    if (currentMatch) {
+      const file = findMatchSourceFile(currentMatch);
+      if (file) {
+        const fileIndex = selectedStudyFiles.findIndex((item) => item.id === file.id);
+        const segmentIndex = fileSegments(file).findIndex((segment) => segment.label === currentMatch.sourceLabel);
+        if (fileIndex >= 0) setReadMaterialIndex(fileIndex);
+        setPreviewSlideIndex(Math.max(0, segmentIndex));
+      }
+    }
+    setStudyFormat('read'); setPhase('review'); setShowExtractedText(false);
+  };
+
   const getAnswerFeedback = async () => {
+    if (answer !== null) return;
     if (!apiKey) { setShowApiKeyModal(true); return; }
     if (!answerDraft.trim()) { notify('Write a short answer first.'); return; }
     if (studySourceText.trim().length < 40) { notify('Add or select source material first.'); return; }
@@ -1403,6 +1444,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     try {
       const result = await checkAnswerWithAI(apiKey, studySourceText, currentQuestion, answerDraft, apiKeyProvider || aiProvider);
       setAiFeedback(result);
+      const supported = result.assessment === 'supported';
+      const outcome: StudyAttempt['outcome'] = supported ? 'self-rated-ready' : 'needs-review';
+      setAnswer(supported ? 1 : 0);
+      setAttempted((count) => count + 1);
+      setHistory((previous) => [{ id: `${Date.now()}-${previous.length}`, question: currentQuestion, mode, outcome, createdAt: new Date().toISOString() }, ...previous].slice(0, 200));
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not check this answer. Try again.');
     } finally { setAiBusy(false); }
@@ -1420,7 +1466,19 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const startStudy = (pace: Pace = mode, firstQuestionIndex = 0) => {
-    setMode(pace); setSelectedPace(pace); setQuestionIndex(Math.max(0, firstQuestionIndex)); setPhase(pace === 'deep' ? 'module' : 'diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('study');
+    const defaultIds = [...(notes.trim() ? ['__notes__'] : []), ...sourceFiles.map((file) => file.id)];
+    const effectiveIds = selectedSourceIds.length ? selectedSourceIds : sourceScope === 'selected' ? [] : defaultIds;
+    if (!effectiveIds.length && (sourceFiles.length || notes.trim())) { notify('Select at least one source before starting.'); setPage('import'); return; }
+    if (!selectedSourceIds.length && effectiveIds.length) {
+      setSelectedSourceIds(effectiveIds);
+      setSourceScope('selected');
+      setMatches(buildMatches([...(effectiveIds.includes('__notes__') ? asStudySegments(notes) : []), ...sourceFiles.filter((file) => effectiveIds.includes(file.id)).flatMap(fileSegments)], questionList));
+    }
+    const overviewText = [...(effectiveIds.includes('__notes__') && notes.trim() ? [`Subject notes\n${notes}`] : []), ...sourceFiles.filter((file) => effectiveIds.includes(file.id)).flatMap((file) => fileSegments(file).map((segment) => `${file.name} · ${segment.label}\n${segment.text}`))].join('\n\n');
+    const overviewHash = hashText(`${activeSubject?.name || 'Study materials'}\n${overviewText}`);
+    const hasCachedOverview = aiSummary?.subjectId === (activeSubjectId || '') && aiSummary.sourceHash === overviewHash;
+    setMode(pace); setSelectedPace(pace); setQuestionIndex(Math.max(0, firstQuestionIndex)); setPhase('overview'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study');
+    if (!hasCachedOverview && apiKey && overviewText.trim().length >= 40) void generateSummaryFor(overviewText, activeSubject?.name || 'Study materials', overviewHash);
   };
 
   const submitAnswer = (value: number) => {
@@ -1433,27 +1491,33 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const continueSession = () => {
-    if (phase === 'diagnostic') { setPhase('review'); setAnswer(null); setAnswerDraft(''); }
-    else if (phase === 'check' && hasNextQuestion) { setQuestionIndex((index) => index + 1); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); }
+    if (phase === 'diagnostic' && hasNextQuestion) { setQuestionIndex((index) => index + 1); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); }
+    else if (phase === 'diagnostic') { setStudyFormat('read'); setReadMaterialIndex(0); setPreviewSlideIndex(0); setPhase('module'); setAnswer(null); setAnswerDraft(''); }
+    else if (phase === 'check' && hasNextQuestion) { setQuestionIndex((index) => index + 1); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); }
     else { setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('insights'); }
   };
 
   const quizPanel = demoMaterial ? <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? `QUESTION ${questionIndex + 1}` : 'RECALL CHECK'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text>
     {currentDemoQuiz.options.map((option, i) => <Pressable key={i} onPress={() => submitAnswer(i)} style={{ borderWidth: 1, borderColor: answer === i ? (i === correctAnswer ? '#43c982' : '#db785b') : palette.line, backgroundColor: answer === i ? (i === correctAnswer ? 'rgba(33,129,91,0.28)' : 'rgba(217,120,91,0.20)') : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 14 }}><Text style={{ color: palette.ink, fontWeight: '600', fontSize: 14 }}>{String.fromCharCode(65 + i)}. {option}</Text></Pressable>)}
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === correctAnswer ? 'rgba(33,129,91,0.20)' : 'rgba(217,120,91,0.16)', borderWidth: 1, borderColor: answer === correctAnswer ? 'rgba(67,201,130,0.48)' : 'rgba(217,120,91,0.45)' }}><Text style={{ color: answer === correctAnswer ? '#8ce0ae' : '#f0a38d', fontWeight: '800' }}>{answer === correctAnswer ? 'Correct.' : 'Not quite — check the source passage.'}</Text><Text style={[styles.small, { marginTop: 4, color: '#c3cfca' }]}>{currentDemoQuiz.feedback[answer]}</Text></View>}
-    {answer !== null && (answer !== correctAnswer ? <ActionButton label={currentMatch ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →'} onPress={() => currentMatch ? void openSourceLocation(currentMatch) : openSourcePassage()} /> : <ActionButton label={phase === 'diagnostic' ? 'Review the key passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={continueSession} />)}
+    {answer !== null && phase === 'diagnostic' && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={hasNextQuestion ? 'Next diagnostic →' : 'Review module →'} onPress={continueSession} />{!hasNextQuestion && <ActionButton secondary label="Skip to quiz" onPress={() => void startQuiz()} />}</View>}
+    {answer !== null && phase === 'check' && (answer !== correctAnswer ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Review this part →" onPress={openQuestionReview} /><ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish quiz'} onPress={continueSession} /></View> : <ActionButton label={hasNextQuestion ? 'Next question →' : 'Finish quiz →'} onPress={continueSession} />)}
+    {phase === 'diagnostic' && answer === null && <ActionButton secondary label="Skip diagnostic · read module" onPress={startModuleReading} />}
   </View> : <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? 'RECALL' : 'RETRY'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text><Text style={styles.body}>Answers are self-rated, not graded.</Text>
-    <TextInput value={answerDraft} onChangeText={(value) => { setAnswerDraft(value); setAiFeedback(null); }} multiline placeholder="Type a short answer or key points…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 90 }]} />
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton compact label={aiBusy ? 'Checking…' : 'Check with AI'} disabled={aiBusy} onPress={() => void getAnswerFeedback()} /><ActionButton compact secondary label="I could explain it" onPress={() => submitAnswer(1)} /><ActionButton compact secondary label="Not sure yet" onPress={() => submitAnswer(0)} /></View>
+    <TextInput value={answerDraft} onChangeText={(value) => { setAnswerDraft(value); setAiFeedback(null); }} editable={answer === null} multiline placeholder="Type a short answer or key points…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 90, opacity: answer === null ? 1 : 0.72 }]} />
+    {answer === null && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton compact label={aiBusy ? 'Checking…' : 'Check with AI'} disabled={aiBusy} onPress={() => void getAnswerFeedback()} /><ActionButton compact secondary label="I could explain it" disabled={aiBusy} onPress={() => submitAnswer(1)} /><ActionButton compact secondary label="Not sure yet" disabled={aiBusy} onPress={() => submitAnswer(0)} /></View>}
     {aiFeedback && <View accessibilityLiveRegion="polite" style={{ padding: 13, borderRadius: 11, backgroundColor: aiFeedback.assessment === 'supported' ? 'rgba(33,129,91,0.20)' : 'rgba(245,216,94,0.1)', borderWidth: 1, borderColor: aiFeedback.assessment === 'supported' ? 'rgba(67,201,130,0.42)' : 'rgba(245,216,94,0.32)', gap: 5 }}><Text style={{ color: aiFeedback.assessment === 'supported' ? '#8ce0ae' : '#fff2ad', fontWeight: '800' }}>{aiFeedback.assessment === 'supported' ? 'Supported by your source' : aiFeedback.assessment === 'partial' ? 'Partly supported' : 'Review the source'}</Text><Text style={[styles.body, { color: '#d7e2dc' }]}>{aiFeedback.feedback}</Text>{!!aiFeedback.evidence && <Text style={styles.small}>“{aiFeedback.evidence}”</Text>}</View>}
     {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === 1 ? 'rgba(33,129,91,0.20)' : 'rgba(245,216,94,0.12)', borderWidth: 1, borderColor: answer === 1 ? 'rgba(67,201,130,0.42)' : 'rgba(245,216,94,0.32)' }}><Text style={{ color: answer === 1 ? '#8ce0ae' : '#fff2ad', fontWeight: '800' }}>{answer === 1 ? 'Ready' : 'Review again'}</Text></View>}
-    {answer !== null && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={answer === 0 ? (currentMatch?.passageIndex ? `Open source · ${currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`} →` : 'Review notes manually →') : phase === 'diagnostic' ? 'Review the linked passage →' : hasNextQuestion ? 'Next question →' : 'Finish session →'} onPress={answer === 0 ? (currentMatch ? () => void openSourceLocation(currentMatch) : openSourcePassage) : phase === 'diagnostic' ? openSourcePassage : continueSession} />{answer === 0 && phase === 'check' && <ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish session'} onPress={continueSession} />}</View>}
+    {answer !== null && phase === 'diagnostic' && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={hasNextQuestion ? 'Next diagnostic →' : 'Review module →'} onPress={continueSession} />{!hasNextQuestion && <ActionButton secondary label="Skip to quiz" onPress={() => void startQuiz()} />}</View>}
+    {answer !== null && phase === 'check' && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>{answer === 0 && <ActionButton label="Review this part →" onPress={openQuestionReview} />}<ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish quiz'} onPress={continueSession} /></View>}
+    {phase === 'diagnostic' && answer === null && <ActionButton secondary label="Skip diagnostic · read module" onPress={startModuleReading} />}
   </View>;
 
-  const reviewPanel = <View style={[styles.card, { gap: 16 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}><View><Text style={styles.label}>{phase === 'module' ? 'FULL MODULE' : currentMatch?.manual ? 'MANUAL SOURCE' : currentMatch ? 'SUGGESTED SOURCE' : 'SOURCE REVIEW'}</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 20, marginTop: 6 }}>{phase === 'module' ? 'Read the module' : 'Review the passage'}</Text>{currentMatch?.passageIndex && <Text style={[styles.small, { marginTop: 5 }]}>{currentMatch.sourceLabel || `passage ${currentMatch.passageIndex}`}</Text>}</View></View>
-    {phase !== 'module' && currentMatch && findMatchSourceFile(currentMatch) && <ActionButton compact secondary label="Open source location →" onPress={() => void openSourceLocation(currentMatch)} />}
-    {phase === 'module' ? <View style={{ gap: 10 }}>{sourceParagraphs.map((paragraph, index) => <View key={`module-${index}`} style={{ borderRadius: 10, padding: 5, gap: 6 }}>{(index === 0 || sourceParagraphs[index - 1]?.sourceLabel !== paragraph.sourceLabel) && <Text style={{ color: '#b8e8c7', fontSize: 11, fontWeight: '800' }}>{paragraph.sourceLabel}</Text>}<Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{paragraph.text}</Text></View>)}</View> : <Text style={{ color: palette.ink, fontSize: 15, lineHeight: 26 }}>{reviewPassage}</Text>}
-    {phase === 'module' ? <ActionButton label="Start with a quick diagnostic →" onPress={() => { setPhase('diagnostic'); setAnswer(null); }} /> : <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}><ActionButton label="I get it · quiz me" onPress={() => { setPhase('check'); setAnswer(null); setAnswerDraft(''); }} /><ActionButton label="Still confusing" secondary onPress={() => notify(demoMaterial ? 'Try it in your own words: glucose is split during glycolysis in the cytoplasm, leaving a net gain of two ATP.' : 'Alternate explanations are a planned AI feature. For now, reread the linked source or shorten your notes to one confusing idea.')} /></View>}
+  const reviewFile = currentMatch ? findMatchSourceFile(currentMatch) : null;
+  const reviewPanel = <View style={[styles.card, { gap: 16 }]}>
+    <View><Text style={styles.label}>QUESTION LINKED TO THIS SOURCE</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 19, lineHeight: 27, marginTop: 6 }}>{currentQuestion}</Text><Text style={[styles.small, { marginTop: 5 }]}>{currentMatch?.sourceLabel || 'No exact source match was found; review the closest available passage.'}</Text></View>
+    {reviewFile ? <>{lecturePreview(reviewFile, currentQuestion, true)}<Text style={styles.small}>Highlighted context from the original material. The page layout stays intact.</Text></> : <View style={{ borderRadius: 11, padding: 13, borderWidth: 1, borderColor: 'rgba(245,216,94,0.25)', backgroundColor: 'rgba(245,216,94,0.07)' }}>{highlightedPassage(reviewPassage, currentQuestion)}</View>}
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Try this question again →" onPress={() => { setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); }} /><ActionButton secondary label="Back to module" onPress={startModuleReading} /></View>
   </View>;
 
   const navItems = [
@@ -1580,16 +1644,29 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     </View> : null}
   </View>;
 
-  const phaseStep = mode === 'deep' ? (phase === 'module' ? 1 : phase === 'diagnostic' ? 2 : phase === 'review' ? 3 : 4) : (phase === 'diagnostic' ? 1 : phase === 'review' ? 2 : 3);
-  const phaseTotal = mode === 'deep' ? 4 : 3;
-  const phaseDescription = phase === 'module' ? 'read the full module' : phase === 'diagnostic' ? (questionIndex === 0 ? 'start with recall' : `question ${questionIndex + 1} · recall check`) : phase === 'review' ? `question ${questionIndex + 1} · read the signal` : hasNextQuestion ? `question ${questionIndex + 1} · retrieve again` : 'retrieve again';
+  const activeOverview = aiSummary?.subjectId === (activeSubjectId || '') && aiSummary.sourceHash === aiSourceHash ? aiSummary.result : null;
+  const overviewPanel = <View style={[styles.card, { gap: 16 }]}>
+    <View><Text style={styles.label}>AI MODULE OVERVIEW</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', marginTop: 5 }}>Your module, at a glance</Text><Text style={[styles.small, { marginTop: 4 }]}>{displayModuleTitle}</Text></View>
+    {activeOverview ? <><Text style={[styles.body, { color: '#e0ebe4' }]}>{activeOverview.summary}</Text>{!!activeOverview.keyPoints.length && <View style={{ gap: 7 }}><Text style={styles.label}>KEY IDEAS</Text>{activeOverview.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d7e2dc' }]}>• {point}</Text>)}</View>}{!!activeOverview.vocabulary.length && <View style={{ gap: 6 }}><Text style={styles.label}>IMPORTANT TERMS</Text>{activeOverview.vocabulary.slice(0, 4).map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <View style={{ gap: 8, borderRadius: 12, padding: 13, borderWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.035)' }}><Text style={[styles.body, { color: '#d7e2dc' }]}>{aiBusy ? 'Reading your selected sources and preparing an overview…' : apiKey ? 'Generate a concise overview from the selected material.' : 'Connect your AI key to get a source-grounded overview.'}</Text>{!aiBusy && <ActionButton compact secondary label={apiKey ? 'Generate overview' : `Connect ${aiProviderName}`} onPress={() => void generateSummary()} />}</View>}
+    {!!questionList.length && <View style={{ gap: 7, borderTopWidth: 1, borderColor: palette.line, paddingTop: 12 }}><Text style={styles.label}>{questionList.length} PROVIDED QUESTION{questionList.length === 1 ? '' : 'S'}</Text>{questionList.slice(0, 3).map((question, index) => <Text key={`${index}-${question}`} numberOfLines={2} style={styles.small}>{index + 1}. {question}</Text>)}{questionList.length > 3 && <Text style={styles.small}>+ {questionList.length - 3} more</Text>}</View>}
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 12 }}>
+      {studyFormat === 'flashcards' ? <ActionButton label="Start flashcards →" disabled={aiBusy} onPress={() => { setQuestionIndex(0); setFlashcardRevealed(false); setPhase('diagnostic'); }} /> : questionList.length ? <ActionButton label="Start diagnostic →" disabled={aiBusy} onPress={startDiagnostic} /> : <ActionButton label="Read the module →" disabled={aiBusy} onPress={startModuleReading} />}
+      {studyFormat === 'flashcards' && questionList.length > 0 && <ActionButton secondary label="Start with the questions" disabled={aiBusy} onPress={startDiagnostic} />}
+      {studyFormat !== 'flashcards' && questionList.length > 0 && <ActionButton secondary label="Read module first" disabled={aiBusy} onPress={startModuleReading} />}
+      {studyFormat !== 'flashcards' && !questionList.length && <ActionButton secondary label={aiBusy ? 'Preparing quiz…' : 'Take quiz now'} disabled={aiBusy} onPress={() => void startQuiz()} />}
+      {questionList.length > 0 && studyFormat !== 'flashcards' && <ActionButton secondary label="Skip to reading" disabled={aiBusy} onPress={startModuleReading} />}
+    </View>
+  </View>;
+  const phaseStep = phase === 'overview' ? 1 : phase === 'diagnostic' ? 2 : phase === 'module' ? 3 : phase === 'review' ? 3 : 4;
+  const phaseTotal = 4;
+  const phaseDescription = phase === 'overview' ? 'get the big picture' : phase === 'module' ? 'review question-linked material' : phase === 'diagnostic' ? `question ${questionIndex + 1} · first recall` : phase === 'review' ? 'revisit the linked source' : `question ${questionIndex + 1} · quiz`;
   const studyScreen = <View style={styles.content}>
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}><View><Text style={styles.label}>{mode.toUpperCase()} MODE · {displayModuleTitle.toUpperCase()}</Text><Text style={[styles.title, { marginTop: 7 }]}>{phase === 'module' ? 'Read the full module' : phase === 'diagnostic' ? 'Quick diagnostic' : phase === 'review' ? 'Targeted review' : 'Check what stuck'}</Text></View><ActionButton label="Exit session" secondary onPress={() => setPage('home')} /></View>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}><View><Text style={styles.label}>{mode.toUpperCase()} MODE · {displayModuleTitle.toUpperCase()}</Text><Text style={[styles.title, { marginTop: 7 }]}>{phase === 'overview' ? 'Start with the big picture' : phase === 'module' ? 'Review the module' : phase === 'diagnostic' ? 'Quick diagnostic' : phase === 'review' ? 'Review this part' : 'Take the quiz'}</Text></View><ActionButton label="Exit session" secondary onPress={() => setPage('home')} /></View>
     <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>{Array.from({ length: phaseTotal }, (_, index) => <View key={index} style={{ height: 6, flex: 1, backgroundColor: index < phaseStep ? (index + 1 === phaseStep ? palette.yellow : palette.green) : palette.line, borderRadius: 5 }} />)}<Text style={styles.small}>{phaseStep} of {phaseTotal} · {phaseDescription}</Text></View>
-    {studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file, fileIndex) => fileIndex === readMaterialIndex ? <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><View><Text style={styles.label}>MATERIAL {fileIndex + 1} OF {selectedStudyFiles.length}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800', marginTop: 3 }}>{file.name}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary disabled={fileIndex <= 0} label="← Previous material" onPress={() => navigateReadMaterial(-1)} /><ActionButton compact secondary disabled={fileIndex >= selectedStudyFiles.length - 1} label="Next material →" onPress={() => navigateReadMaterial(1)} /></View></View>{lecturePreview(file)}<Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start' }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found.'}</Text>}</View> : null)}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, questionList.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{questionList[questionIndex] || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: compact ? 11 : 15, gap: 10 }}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 6 }}><View style={{ flex: 1 }}><Text style={styles.label}>{currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) ? 'ORIGINAL SOURCE' : 'SOURCE CONTEXT'}</Text><Text numberOfLines={1} style={{ color: palette.ink, fontWeight: '800', marginTop: 3 }}>{currentFlashcardFile?.name || currentFlashcardMatch?.sourceLabel || 'Selected study material'}</Text></View>{currentFlashcardMatch?.sourceLabel && <Text style={styles.small}>{currentFlashcardMatch.sourceLabel.split(' · ').slice(-1)[0]}</Text>}</View>
+    {phase === 'overview' ? overviewPanel : phase === 'review' ? reviewPanel : phase === 'module' && studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file, fileIndex) => fileIndex === readMaterialIndex ? <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><View><Text style={styles.label}>MATERIAL {fileIndex + 1} OF {selectedStudyFiles.length}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800', marginTop: 3 }}>{file.name}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary disabled={fileIndex <= 0} label="← Previous material" onPress={() => navigateReadMaterial(-1)} /><ActionButton compact secondary disabled={fileIndex >= selectedStudyFiles.length - 1} label="Next material →" onPress={() => navigateReadMaterial(1)} /></View></View>{lecturePreview(file, undefined, true)}<View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 7 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable><ActionButton compact label="Take quiz now →" onPress={() => void startQuiz()} /></View>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found.'}</Text>}</View> : null)}{!selectedStudyFiles.length && <ActionButton label="Take quiz now →" onPress={() => void startQuiz()} />}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, questionList.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{questionList[questionIndex] || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: compact ? 11 : 15, gap: 10 }}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 6 }}><View style={{ flex: 1 }}><Text style={styles.label}>{currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) ? 'ORIGINAL SOURCE' : 'SOURCE CONTEXT'}</Text><Text numberOfLines={1} style={{ color: palette.ink, fontWeight: '800', marginTop: 3 }}>{currentFlashcardFile?.name || currentFlashcardMatch?.sourceLabel || 'Selected study material'}</Text></View>{currentFlashcardMatch?.sourceLabel && <Text style={styles.small}>{currentFlashcardMatch.sourceLabel.split(' · ').slice(-1)[0]}</Text>}</View>
       {currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) && <><RenderedPagePreview fileId={currentFlashcardFile.id} fileName={currentFlashcardFile.name} pageIndex={sourceCheckPageIndex} highlightPhrases={[flashcardEvidence]} fallbackText={flashcardPageSegment?.text || flashcardEvidence} /><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><ActionButton compact secondary disabled={sourceCheckPageIndex <= 0} label="← Page" onPress={() => setSourceCheckPageIndex((index) => Math.max(0, index - 1))} /><Text style={styles.small}>Page {sourceCheckPageIndex + 1} of {flashcardPageCount} · ← / → to flip</Text><ActionButton compact secondary disabled={sourceCheckPageIndex >= flashcardPageCount - 1} label="Page →" onPress={() => setSourceCheckPageIndex((index) => Math.min(flashcardPageCount - 1, index + 1))} /></View></>}
       {!!flashcardEvidence && <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, paddingLeft: 10, paddingVertical: 4 }}><Text style={styles.label}>RELEVANT CONTEXT</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 21, marginTop: 4 }}>{flashcardEvidence}</Text></View>}
-      {!currentFlashcardFile && !flashcardEvidence && <Text style={styles.body}>Review the selected source and write the answer in your own words.</Text>}</View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < questionList.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < questionList.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); setFlashcardRevealed(true); } }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'review' || phase === 'module' ? reviewPanel : quizPanel}
+      {!currentFlashcardFile && !flashcardEvidence && <Text style={styles.body}>Review the selected source and write the answer in your own words.</Text>}</View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < questionList.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < questionList.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); setFlashcardRevealed(true); } }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'module' ? reviewPanel : quizPanel}
   </View>;
 
   const readyCount = history.filter((attempt) => attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready').length;
