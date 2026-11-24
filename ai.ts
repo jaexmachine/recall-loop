@@ -227,3 +227,43 @@ export async function generateStudySetWithAI(apiKey: string, text: string, subje
 export const summarizeWithAI = (apiKey: string, text: string, subject?: string, provider: AiProvider = 'openai') => askAI(apiKey, provider, 'summary', text, { subject });
 export const draftQuestionsWithAI = (apiKey: string, text: string, existingQuestions: string[], count = 8, provider: AiProvider = 'openai') => askAI(apiKey, provider, 'questions', text, { existingQuestions: existingQuestions.join('\n'), count });
 export const checkAnswerWithAI = (apiKey: string, text: string, question: string, answer: string, provider: AiProvider = 'openai') => askAI(apiKey, provider, 'answer', text, { question, answer });
+
+export async function embedTexts(apiKey: string, provider: AiProvider, texts: string[], taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY', title?: string): Promise<number[][]> {
+  if (!apiKey.trim()) throw new Error(`Connect your ${provider === 'gemini' ? 'Gemini' : 'OpenAI'} key to search your sources.`);
+  if (!texts.length || texts.some((text) => !text.trim() || text.length > 7000)) throw new Error('Source text needs to be split into smaller passages before indexing.');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  let response: Response;
+  try {
+    const isGemini = provider === 'gemini';
+    response = await fetch(isGemini ? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents' : 'https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: isGemini
+        ? { 'x-goog-api-key': apiKey.trim(), 'Content-Type': 'application/json' }
+        : { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(isGemini
+        ? { requests: texts.map((text) => ({ model: 'models/gemini-embedding-001', content: { parts: [{ text }] }, embedContentConfig: { taskType, outputDimensionality: 768, ...(taskType === 'RETRIEVAL_DOCUMENT' && title ? { title } : {}) } })) }
+        : { model: 'text-embedding-3-small', input: texts, dimensions: 768, encoding_format: 'float' }),
+    });
+  } catch {
+    const name = provider === 'gemini' ? 'Gemini' : 'OpenAI';
+    if (controller.signal.aborted) throw new Error(`${name} took too long to build the source index. Try again with fewer files.`);
+    throw new Error(`Could not connect to ${name} to build the source index. Check your connection.`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  const providerName = provider === 'gemini' ? 'Gemini' : 'OpenAI';
+  if (response.status === 401 || response.status === 403) throw new Error(`${providerName} rejected this key. Check that it can use embeddings.`);
+  if (response.status === 429) throw new Error(`${providerName} embeddings are temporarily rate-limited. Wait a moment, then try again.`);
+  if (!response.ok) throw new Error(`${providerName} could not build the source index (HTTP ${response.status}).`);
+  let payload: { embeddings?: { values?: number[] }[]; data?: { embedding?: number[]; index?: number }[] };
+  try { payload = await response.json(); } catch { throw new Error(`${providerName} returned an unreadable source index. Try again.`); }
+  const embeddings = provider === 'gemini'
+    ? payload.embeddings?.map((item) => item.values || []) || []
+    : (payload.data || []).sort((a, b) => (a.index || 0) - (b.index || 0)).map((item) => item.embedding || []);
+  if (embeddings.length !== texts.length || embeddings.some((values) => values.length !== 768 || values.some((value) => !Number.isFinite(value)))) {
+    throw new Error(`${providerName} returned an incomplete source index. Try again.`);
+  }
+  return embeddings;
+}

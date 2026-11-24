@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   Alert,
+  Easing,
   Modal,
   Platform,
   Pressable,
@@ -18,9 +20,10 @@ import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { parse as parsePowerPoint, renderSlideToSvg, slideText } from '@web-ppt/core';
-import { checkAnswerWithAI, draftQuestionsWithAI, generateStudySetWithAI, summarizeWithAI, type AiProvider, type AiResult, type AiStudySet } from './ai';
+import { checkAnswerWithAI, draftQuestionsWithAI, embedTexts, generateStudySetWithAI, summarizeWithAI, type AiProvider, type AiResult, type AiStudySet } from './ai';
 import { StudySetStudio } from './StudySetStudio';
-import { parseFlashcardCsv, parseQuizResultsHtml, type ImportedFlashcard } from './quizImport';
+import { parseFlashcardCsv, parseMultipleChoiceCsv, parsePracticeQuizHtml, parseQuizResultsHtml, type ImportedFlashcard, type ImportedMultipleChoice } from './quizImport';
+import { chunkSourceText, searchVectorRecords, type SourceChunkInput, type VectorRecord } from './vectorRag';
 
 type Match = { question: string; passage: string; overlap: number; passageIndex: number | null; sourceLabel?: string; sourceFileId?: string; manual?: boolean };
 type StudyAttempt = { id: string; question: string; mode: Pace; outcome: 'correct' | 'missed' | 'self-rated-ready' | 'needs-review'; createdAt: string };
@@ -28,15 +31,22 @@ type StudySegment = { label: string; text: string; sourceFileId?: string };
 type StudyFile = { id: string; name: string; text: string; segments?: StudySegment[]; role: 'source' | 'questions' };
 type OriginalDocument = { id: string; name: string; type: string; blob: Blob };
 type SourceReader = { title: string; location: string; text: string };
-type Subject = { id: string; name: string; notes: string; questionsText: string; files: StudyFile[]; flashcards?: ImportedFlashcard[]; aiStudySet?: AiStudySet };
+type Subject = { id: string; name: string; notes: string; questionsText: string; files: StudyFile[]; flashcards?: ImportedFlashcard[]; multipleChoiceQuestions?: ImportedMultipleChoice[]; aiStudySet?: AiStudySet };
 type SavedWorkspace = { version: 1 | 2; notes: string; questionsText: string; demoMaterial: boolean; matches: Match[]; attempted: number; correct: number; history: StudyAttempt[]; subjects: Subject[]; activeSubjectId: string | null; selectedSourceId: string | null; selectedSourceIds?: string[]; sourceScope: 'subject' | 'file' | 'notes' | 'selected' };
 type Pace = 'cram' | 'steady' | 'deep';
-type Phase = 'overview' | 'module' | 'diagnostic' | 'review' | 'check';
+type Phase = 'overview' | 'module' | 'diagnostic' | 'review' | 'check' | 'flashcardsDone';
 
 const storageKey = 'recall-loop.workspace.v2';
 const legacyStorageKey = 'recall-loop.workspace.v1';
 const originalDbName = 'recall-loop.originals.v1';
+const vectorIndexPrefix = 'vector-index:';
 let originalsDatabasePromise: Promise<IDBDatabase> | null = null;
+
+type VectorIndexEntry = { contentHash: string; provider: AiProvider; model: VectorRecord['model']; records: VectorRecord[] };
+
+function vectorIndexKey(subjectId: string, sourceId: string) {
+  return `${vectorIndexPrefix}${subjectId}:${sourceId}`;
+}
 
 function openOriginalsDatabase(): Promise<IDBDatabase> {
   if (originalsDatabasePromise) return originalsDatabasePromise;
@@ -89,6 +99,48 @@ async function clearWorkspaceSnapshot() {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error('Could not clear the saved workspace.'));
     transaction.onabort = () => reject(transaction.error || new Error('Could not clear the saved workspace.'));
+  });
+}
+
+async function getVectorIndex(subjectId: string, sourceId: string): Promise<VectorIndexEntry | null> {
+  const db = await openOriginalsDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction('workspace', 'readonly').objectStore('workspace').get(vectorIndexKey(subjectId, sourceId));
+    request.onsuccess = () => resolve((request.result as VectorIndexEntry | undefined) || null);
+    request.onerror = () => reject(request.error || new Error('Could not read the source index.'));
+  });
+}
+
+async function saveVectorIndex(subjectId: string, sourceId: string, entry: VectorIndexEntry) {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('workspace', 'readwrite');
+    transaction.objectStore('workspace').put(entry, vectorIndexKey(subjectId, sourceId));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not save the source index.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Could not save the source index.'));
+  });
+}
+
+async function deleteVectorIndex(subjectId: string, sourceId: string) {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('workspace', 'readwrite');
+    transaction.objectStore('workspace').delete(vectorIndexKey(subjectId, sourceId));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not remove the source index.'));
+  });
+}
+
+async function clearVectorIndexes() {
+  const db = await openOriginalsDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction('workspace', 'readwrite');
+    const store = transaction.objectStore('workspace');
+    const request = store.getAllKeys();
+    request.onsuccess = () => request.result.filter((key) => typeof key === 'string' && key.startsWith(vectorIndexPrefix)).forEach((key) => store.delete(key));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not clear the source index.'));
   });
 }
 
@@ -196,6 +248,10 @@ function hashText(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function flashcardKey(card: ImportedFlashcard) {
+  return `${card.front.trim().toLocaleLowerCase()}\u0000${card.source.trim().toLocaleLowerCase()}`;
 }
 
 function draftPracticeQuestions(notes: string) {
@@ -741,6 +797,12 @@ export default function App() {
   const [studyFormat, setStudyFormat] = useState<'flashcards' | 'qa' | 'read'>('qa');
   const [readMaterialIndex, setReadMaterialIndex] = useState(0);
   const [flashcardRevealed, setFlashcardRevealed] = useState(false);
+  const flashcardFlip = useRef(new Animated.Value(0)).current;
+  const [flashcardRatings, setFlashcardRatings] = useState<Record<string, 'known' | 'unknown'>>({});
+  const [flashcardReviewDeck, setFlashcardReviewDeck] = useState<ImportedFlashcard[] | null>(null);
+  const [flashcardSourceResult, setFlashcardSourceResult] = useState<{ front: string; record: VectorRecord } | null>(null);
+  const [ragBusy, setRagBusy] = useState(false);
+  const [ragProgress, setRagProgress] = useState('');
   const [showExtractedText, setShowExtractedText] = useState(false);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
   const [sourceViewerOpen, setSourceViewerOpen] = useState(false);
@@ -986,10 +1048,18 @@ export default function App() {
       : [...asStudySegments(notes), ...(activeSubject?.files.filter((file) => file.role === 'source').flatMap(fileSegments) || [])];
   const questionList = useMemo(() => splitQuestions(questionsText), [questionsText]);
   const importedFlashcards = activeSubject?.flashcards || [];
+  const importedMultipleChoice = activeSubject?.multipleChoiceQuestions || [];
   const importedQuestionKeys = new Set(importedFlashcards.map((card) => card.front.trim().toLocaleLowerCase()));
-  const flashcardDeck: ImportedFlashcard[] = [
+  const allFlashcards: ImportedFlashcard[] = [
     ...importedFlashcards,
     ...questionList.filter((question) => !importedQuestionKeys.has(question.trim().toLocaleLowerCase())).map((front) => ({ front, back: '', source: '' })),
+  ];
+  const flashcardDeck = flashcardReviewDeck || allFlashcards;
+  const unknownFlashcards = allFlashcards.filter((card) => flashcardRatings[flashcardKey(card)] === 'unknown');
+  const knownFlashcardCount = allFlashcards.filter((card) => flashcardRatings[flashcardKey(card)] === 'known').length;
+  const selectedRagSources: { id: string; name: string; segments: SourceChunkInput[] }[] = [
+    ...(selectedSourceIds.includes('__notes__') && notes.trim() ? [{ id: '__notes__', name: 'Subject notes', segments: asStudySegments(notes).map((segment) => ({ sourceId: '__notes__', sourceName: 'Subject notes', label: segment.label, text: segment.text })) }] : []),
+    ...selectedStudyFiles.map((file) => ({ id: file.id, name: file.name, segments: fileSegments(file).map((segment) => ({ sourceId: file.id, sourceName: file.name, label: `${file.name} · ${segment.label}`, text: segment.text })) })),
   ];
   const selectedAiSegments = [...(selectedSourceIds.includes('__notes__') && notes.trim() ? [{ label: 'Subject notes', text: notes }] : []), ...selectedStudyFiles.flatMap((file) => fileSegments(file).map((segment) => ({ ...segment, label: `${file.name} · ${segment.label}` })))];
   const selectedAiMaterialText = selectedAiSegments.map((segment) => `${segment.label}\n${segment.text}`).join('\n\n');
@@ -997,11 +1067,13 @@ export default function App() {
   const aiStudySourceHash = hashText(`${aiSourceHash}\n${questionList.join('\n')}`);
   const aiSelectedSourceCount = selectedSourceIds.filter((id) => id === '__notes__' ? !!notes.trim() : selectedStudyFiles.some((file) => file.id === id)).length;
   const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
-  const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0;
+  const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0 || importedFlashcards.length > 0;
   const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : (questionList[questionIndex] || 'What is the main idea of this module?');
   useEffect(() => { setAiFeedback(null); }, [currentQuestion]);
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
-  const correctAnswer = currentDemoQuiz.correct;
+  const currentImportedQuiz = importedMultipleChoice.find((item) => item.question === currentQuestion) || null;
+  const quizOptions = currentImportedQuiz?.options || currentDemoQuiz.options;
+  const correctAnswer = currentImportedQuiz?.correctIndex ?? currentDemoQuiz.correct;
   const hasNextQuestion = questionIndex < questionList.length - 1;
   const sourceOptions = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label, sourceFileId: segment.sourceFileId }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   const moduleTitle = sourceScope === 'file' && selectedSource ? selectedSource.name.replace(/\.[^.]+$/, '') : activeSubject?.name || notes.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || 'Untitled module';
@@ -1021,12 +1093,29 @@ export default function App() {
   const findMatchSourceFile = (match: Match) => activeSubject?.files.find((file) => file.role === 'source' && (file.id === match.sourceFileId || (!!match.sourceLabel && match.sourceLabel.startsWith(`${file.name} ·`)))) || null;
   const currentFlashcardCard = flashcardDeck[questionIndex];
   const currentFlashcardQuestion = currentFlashcardCard?.front || '';
-  const currentFlashcardMatch = matches.find((match) => match.question === currentFlashcardQuestion) || null;
+  const currentVectorMatch = flashcardSourceResult?.front === currentFlashcardQuestion ? flashcardSourceResult.record : null;
+  const currentFlashcardMatch: Match | null = currentVectorMatch
+    ? { question: currentFlashcardQuestion, passage: currentVectorMatch.text, overlap: 0, passageIndex: 1, sourceLabel: currentVectorMatch.label, sourceFileId: currentVectorMatch.sourceId }
+    : matches.find((match) => match.question === currentFlashcardQuestion) || null;
   const currentFlashcardFile = currentFlashcardMatch ? findMatchSourceFile(currentFlashcardMatch) : null;
   const flashcardEvidence = currentFlashcardMatch ? findRelevantEvidence(currentFlashcardMatch.passage, currentFlashcardQuestion) : '';
+  const currentFlashcardRating = currentFlashcardCard ? flashcardRatings[flashcardKey(currentFlashcardCard)] : undefined;
   const flashcardPageFromMatch = Number(currentFlashcardMatch?.sourceLabel?.match(/(?:page|slide)\s+(\d+)/i)?.[1] || 1) - 1;
   const flashcardPageCount = currentFlashcardFile ? fileSegments(currentFlashcardFile).length : 0;
   const flashcardPageSegment = currentFlashcardFile ? fileSegments(currentFlashcardFile)[sourceCheckPageIndex] : null;
+  const flashcardFrontRotation = flashcardFlip.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+  const flashcardBackRotation = flashcardFlip.interpolate({ inputRange: [0, 1], outputRange: ['180deg', '360deg'] });
+  const flashcardFrontOpacity = flashcardFlip.interpolate({ inputRange: [0, 0.48, 0.52, 1], outputRange: [1, 1, 0, 0] });
+  const flashcardBackOpacity = flashcardFlip.interpolate({ inputRange: [0, 0.48, 0.52, 1], outputRange: [0, 0, 1, 1] });
+
+  useEffect(() => {
+    Animated.timing(flashcardFlip, {
+      toValue: flashcardRevealed ? 1 : 0,
+      duration: 460,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [flashcardFlip, flashcardRevealed]);
 
   useEffect(() => { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); }, [currentFlashcardQuestion, currentFlashcardMatch?.sourceLabel]);
 
@@ -1117,6 +1206,73 @@ export default function App() {
     else Alert.alert('StudyLoop', message);
   };
 
+  const indexSelectedSources = async (force = false) => {
+    if (!activeSubject || !selectedRagSources.length) throw new Error('Select one or more source files before building the source index.');
+    if (!apiKey) { setShowApiKeyModal(true); throw new Error(`Connect your ${aiProviderName} key to build the source index.`); }
+    const embeddingProvider = apiKeyProvider || aiProvider;
+    const embeddingModel: VectorRecord['model'] = embeddingProvider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small';
+    const allRecords: VectorRecord[] = [];
+    for (let sourceIndex = 0; sourceIndex < selectedRagSources.length; sourceIndex += 1) {
+      const source = selectedRagSources[sourceIndex];
+      const contentHash = hashText(source.segments.map((segment) => segment.text).join('\n'));
+      const cached = !force ? await getVectorIndex(activeSubject.id, source.id) : null;
+      if (cached?.contentHash === contentHash && cached.provider === embeddingProvider && cached.model === embeddingModel && cached.records.length) {
+        allRecords.push(...cached.records);
+        continue;
+      }
+
+      const chunks = source.segments.flatMap((segment) => chunkSourceText(segment));
+      if (!chunks.length) continue;
+      const records: VectorRecord[] = [];
+      for (let offset = 0; offset < chunks.length; offset += 16) {
+        const batch = chunks.slice(offset, offset + 16);
+        setRagProgress(`Indexing ${source.name} · ${Math.min(offset + batch.length, chunks.length)} of ${chunks.length}`);
+        const embeddings = await embedTexts(apiKey, embeddingProvider, batch.map((chunk) => chunk.text), 'RETRIEVAL_DOCUMENT', source.name);
+        records.push(...batch.map((chunk, index) => ({
+          ...chunk,
+          id: `${source.id}:${index}:${hashText(chunk.text)}`,
+          subjectId: activeSubject.id,
+          contentHash,
+          provider: embeddingProvider,
+          model: embeddingModel,
+          embedding: embeddings[index],
+        })));
+      }
+      await saveVectorIndex(activeSubject.id, source.id, { contentHash, provider: embeddingProvider, model: embeddingModel, records });
+      allRecords.push(...records);
+      setRagProgress(`Indexed ${source.name} · ${sourceIndex + 1} of ${selectedRagSources.length}`);
+    }
+    setRagProgress('');
+    return allRecords;
+  };
+
+  const findFlashcardSource = async () => {
+    if (!currentFlashcardCard) return;
+    if (!selectedRagSources.length) { notify('Select one or more source files to search.'); return; }
+    if (!apiKey) {
+      setShowApiKeyModal(true);
+      return;
+    }
+    setRagBusy(true);
+    try {
+      const records = await indexSelectedSources();
+      setRagProgress('Finding the closest passage…');
+      const query = [currentFlashcardCard.front, currentFlashcardCard.back].filter(Boolean).join('\n');
+      const [queryEmbedding] = await embedTexts(apiKey, apiKeyProvider || aiProvider, [query], 'RETRIEVAL_QUERY');
+      const match = searchVectorRecords(queryEmbedding, records, 1)[0];
+      if (!match) { notify('No searchable text was found in the selected sources.'); return; }
+      setFlashcardSourceResult({ front: currentFlashcardCard.front, record: match });
+      setSourceCheckPageIndex(Math.max(0, Number(match.label.match(/(?:page|slide)\s+(\d+)/i)?.[1] || 1) - 1));
+      setFlashcardRevealed(true);
+      notify(`Likely match found in ${match.sourceName} · ${match.label.split(' · ').slice(-1)[0]}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not search these sources. Try again.');
+    } finally {
+      setRagBusy(false);
+      setRagProgress('');
+    }
+  };
+
   const importQuizResults = async () => {
     try {
       if (!activeSubject) { notify('Create a subject folder first.'); return; }
@@ -1132,6 +1288,7 @@ export default function App() {
 
       setBusy(true);
       const parsedCards: ImportedFlashcard[] = [];
+      const parsedChoiceQuestions: ImportedMultipleChoice[] = [];
       const failures: string[] = [];
       for (const [index, file] of files.entries()) {
         setNotice(`Reading quiz ${index + 1} of ${files.length}: ${file.name}`);
@@ -1144,18 +1301,26 @@ export default function App() {
           try { content = new TextDecoder(charset).decode(bytes); }
           catch { content = new TextDecoder('utf-8').decode(bytes); }
           const source = file.name.replace(/\.(?:html?|csv)$/i, '');
-          const extracted = /\.csv$/i.test(file.name)
-            ? parseFlashcardCsv(content, source)
-            : parseQuizResultsHtml(content, source);
-          if (!extracted.length) throw new Error('no answered questions were found');
+          const isCsv = /\.csv$/i.test(file.name);
+          const choices = isCsv ? parseMultipleChoiceCsv(content, source) : parsePracticeQuizHtml(content, source);
+          const extracted = isCsv
+            ? (choices.length ? [] : parseFlashcardCsv(content, source))
+            : (choices.length ? [] : parseQuizResultsHtml(content, source));
+          if (!extracted.length && !choices.length) {
+            throw new Error(/\.csv$/i.test(file.name)
+              ? 'No usable content found. Use Question/Answer or Front/Back for cards, or question, options A–D, and correct answer for a quiz.'
+              : 'No questions were found. Use a supported practice quiz HTML file or an answered quiz-results page.');
+          }
           parsedCards.push(...extracted);
+          parsedChoiceQuestions.push(...choices);
+          parsedCards.push(...choices.map((item) => ({ front: item.question, back: item.options[item.correctIndex], source: [item.source, item.module].filter(Boolean).join(' · ') })));
         } catch (error) {
           failures.push(`${file.name}: ${error instanceof Error ? error.message : 'could not be read'}`);
         }
       }
 
-      if (!parsedCards.length) {
-        notify(`No flashcards were imported. ${failures.slice(0, 3).join(' · ')}`);
+      if (!parsedCards.length && !parsedChoiceQuestions.length) {
+        notify(`No study questions were imported. ${failures.slice(0, 3).join(' · ')}`);
         return;
       }
 
@@ -1169,6 +1334,15 @@ export default function App() {
         return true;
       });
       const nextCards = [...existingCards, ...additions];
+      const existingChoiceQuestions = activeSubject.multipleChoiceQuestions || [];
+      const choiceKeys = new Set(existingChoiceQuestions.map((item) => item.question.trim().toLocaleLowerCase()));
+      const choiceAdditions = parsedChoiceQuestions.filter((item) => {
+        const key = item.question.trim().toLocaleLowerCase();
+        if (choiceKeys.has(key)) return false;
+        choiceKeys.add(key);
+        return true;
+      });
+      const nextChoiceQuestions = [...existingChoiceQuestions, ...choiceAdditions];
       const existingQuestions = splitQuestions(questionsText);
       const questionKeys = new Set(existingQuestions.map((question) => question.trim().toLocaleLowerCase()));
       const nextQuestions = [...existingQuestions];
@@ -1176,13 +1350,17 @@ export default function App() {
         const key = card.front.trim().toLocaleLowerCase();
         if (!questionKeys.has(key)) { questionKeys.add(key); nextQuestions.push(card.front); }
       }
-      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, flashcards: nextCards } : subject));
+      for (const item of choiceAdditions) {
+        const key = item.question.trim().toLocaleLowerCase();
+        if (!questionKeys.has(key)) { questionKeys.add(key); nextQuestions.push(item.question); }
+      }
+      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, flashcards: nextCards, multipleChoiceQuestions: nextChoiceQuestions } : subject));
       setQuestionsText(nextQuestions.map((question, questionIndex) => `${questionIndex + 1}. ${question}`).join('\n'));
       setMatches(buildMatches(studySourceSegments, nextQuestions));
       setDemoMaterial(false);
-      const duplicateCount = parsedCards.length - additions.length;
+      const duplicateCount = Math.max(0, parsedCards.length - additions.length);
       const sourceNames = [...new Set(additions.map((card) => card.source))];
-      notify(`${additions.length} flashcard${additions.length === 1 ? '' : 's'} added${duplicateCount ? ` · ${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} skipped` : ''}${sourceNames.length ? ` · ${sourceNames.join(', ')}` : ''}${failures.length ? ` · ${failures.length} file${failures.length === 1 ? '' : 's'} skipped` : ''}.`);
+      notify(`${additions.length} answer card${additions.length === 1 ? '' : 's'} added${choiceAdditions.length ? ` · ${choiceAdditions.length} multiple-choice questions` : ''}${duplicateCount ? ` · ${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} skipped` : ''}${sourceNames.length ? ` · ${sourceNames.slice(0, 2).join(', ')}` : ''}${failures.length ? ` · ${failures.length} file${failures.length === 1 ? '' : 's'} skipped` : ''}.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not import those quiz results.');
     } finally {
@@ -1206,7 +1384,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         return;
       }
       const picker = document.createElement('input');
-      picker.type = 'file'; picker.multiple = true; picker.accept = '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
+      picker.type = 'file'; picker.multiple = true; picker.accept = kind === 'questions' ? '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,.csv,.html,.htm,application/pdf,text/csv,text/html,text/plain,text/markdown' : '.pdf,.docx,.ppt,.pptx,.txt,.md,.markdown,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown';
       const files = await new Promise<File[]>((resolve) => {
         picker.addEventListener('change', () => resolve(Array.from(picker.files || [])), { once: true });
         picker.addEventListener('cancel', () => resolve([]), { once: true });
@@ -1215,14 +1393,33 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       if (!files.length) return;
       const addedFiles: StudyFile[] = [];
       const failures: string[] = [];
+      const importedChoiceQuestions: ImportedMultipleChoice[] = [];
+      const importedQuestionCards: ImportedFlashcard[] = [];
       let originalSaveFailures = 0;
       for (const [index, file] of files.entries()) {
         setNotice(`Reading ${index + 1} of ${files.length}: ${file.name}`);
         try {
           if (file.size > 20 * 1024 * 1024) throw new Error('over 20 MB');
           const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const extracted = (await extractDocumentText(file)).map((segment) => ({ ...segment, sourceFileId: fileId }));
-          const content = extracted.map((segment) => segment.text).join('\n\n').trim();
+          let extracted: StudySegment[];
+          let content: string;
+          const sourceName = file.name.replace(/\.[^.]+$/, '');
+          if (kind === 'questions' && /\.(?:csv|html?)$/i.test(file.name)) {
+            const text = await file.text();
+            const multipleChoice = /\.csv$/i.test(file.name) ? parseMultipleChoiceCsv(text, sourceName) : parsePracticeQuizHtml(text, sourceName);
+            const flashcards = /\.csv$/i.test(file.name)
+              ? (multipleChoice.length ? [] : parseFlashcardCsv(text, sourceName))
+              : (multipleChoice.length ? [] : parseQuizResultsHtml(text, sourceName));
+            importedChoiceQuestions.push(...multipleChoice);
+            importedQuestionCards.push(...flashcards, ...multipleChoice.map((item) => ({ front: item.question, back: item.options[item.correctIndex], source: [item.source, item.module].filter(Boolean).join(' · ') })));
+            const quizPrompts = [...multipleChoice.map((item) => item.question), ...flashcards.map((item) => item.front)];
+            if (!quizPrompts.length) throw new Error(/\.csv$/i.test(file.name) ? 'No valid Q&A or multiple-choice rows found.' : 'No supported practice-quiz questions found.');
+            content = quizPrompts.join('\n');
+            extracted = quizPrompts.map((text, index) => ({ label: `Question ${index + 1}`, text, sourceFileId: fileId }));
+          } else {
+            extracted = (await extractDocumentText(file)).map((segment) => ({ ...segment, sourceFileId: fileId }));
+            content = extracted.map((segment) => segment.text).join('\n\n').trim();
+          }
           const canStudyVisually = kind === 'module' && /\.(?:pdf|pptx?)$/i.test(file.name);
           if (!content && !canStudyVisually) throw new Error('no selectable text was found');
           if (content.length > 10_000_000) throw new Error('extracts to over 10 MB of text; split it into smaller files');
@@ -1239,7 +1436,10 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         notify(`No files were added. ${failures.slice(0, 3).join(' · ')}`);
         return;
       }
-      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, ...addedFiles] } : subject));
+      const uniqueNewCards = importedQuestionCards.filter((card) => !activeSubject.flashcards?.some((saved) => saved.front.toLocaleLowerCase() === card.front.toLocaleLowerCase() && saved.back.toLocaleLowerCase() === card.back.toLocaleLowerCase()));
+      const existingChoiceKeys = new Set((activeSubject.multipleChoiceQuestions || []).map((item) => item.question.toLocaleLowerCase()));
+      const uniqueChoiceQuestions = importedChoiceQuestions.filter((item) => { const key = item.question.toLocaleLowerCase(); if (existingChoiceKeys.has(key)) return false; existingChoiceKeys.add(key); return true; });
+      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, ...addedFiles], flashcards: [...(subject.flashcards || []), ...uniqueNewCards], multipleChoiceQuestions: [...(subject.multipleChoiceQuestions || []), ...uniqueChoiceQuestions] } : subject));
       if (kind === 'module') {
         const addedSourceFiles = addedFiles.filter((file) => file.role === 'source');
         const nextSelectedIds = [...new Set([...selectedSourceIds, ...addedSourceFiles.map((file) => file.id)])];
@@ -1253,13 +1453,16 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         setPreviewSlideIndex(0);
         setShowExtractedText(false);
       } else {
-        setQuestionsText(addedFiles.map((file) => file.text).filter(Boolean).join('\n\n'));
+        const prompts = [...addedFiles.map((file) => file.text).filter(Boolean), ...uniqueChoiceQuestions.map((item) => item.question), ...uniqueNewCards.map((item) => item.front)];
+        const combinedQuestions = [...new Set([...questionList, ...prompts.flatMap(splitQuestions)])];
+        setQuestionsText(combinedQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+        setMatches(buildMatches(studySourceSegments, combinedQuestions));
       }
       setDemoMaterial(false);
       const visualOnlyCount = addedFiles.filter((file) => !file.text.trim()).length;
       const success = `${addedFiles.length} ${kind === 'module' ? 'source file' : 'question file'}${addedFiles.length === 1 ? '' : 's'} added to ${activeSubject.name}.`;
       const details = [visualOnlyCount ? `${visualOnlyCount} need OCR for text matching` : '', originalSaveFailures ? `${originalSaveFailures} original${originalSaveFailures === 1 ? '' : 's'} could not be kept for page preview` : '', failures.length ? `${failures.length} skipped: ${failures.slice(0, 2).join(' · ')}` : ''].filter(Boolean).join(' ');
-      notify(`${success} ${details}`.trim());
+      notify(`${success} ${uniqueChoiceQuestions.length ? `${uniqueChoiceQuestions.length} multiple-choice questions · ` : ''}${uniqueNewCards.length ? `${uniqueNewCards.length} answer cards · ` : ''}${details}`.trim());
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not read that file. Try pasting the text instead.');
     } finally {
@@ -1336,6 +1539,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         }
       }
       await replaceOriginalDocuments(originals);
+      await clearVectorIndexes();
       const restoredSubjects = incoming.subjects as Subject[];
       const restoredActiveId = restoredSubjects.some((subject) => subject.id === incoming.activeSubjectId) ? incoming.activeSubjectId! : restoredSubjects[0]?.id || null;
       const active = restoredSubjects.find((subject) => subject.id === restoredActiveId);
@@ -1402,12 +1606,12 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const beginStudyFormat = (format: 'flashcards' | 'qa' | 'read') => {
-    if (!selectedSourceIds.length && !(format === 'flashcards' && importedFlashcards.length)) { notify('Select at least one source to study.'); return; }
+    if (!selectedSourceIds.length && !(format === 'flashcards' && importedFlashcards.length) && !(format === 'qa' && questionList.length)) { notify('Select at least one source to study.'); return; }
     if (format === 'flashcards' && !selectedSourceIds.length && importedFlashcards.length) {
-      setStudyFormat(format); setFlashcardRevealed(false); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study'); setDemoMaterial(false);
+      setStudyFormat(format); setFlashcardRevealed(false); setFlashcardReviewDeck(null); setFlashcardRatings({}); setFlashcardSourceResult(null); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study'); setDemoMaterial(false);
       return;
     }
-    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); setReadMaterialIndex(0); setPreviewSlideIndex(0);
+    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); if (format === 'flashcards') { setFlashcardReviewDeck(null); setFlashcardRatings({}); setFlashcardSourceResult(null); setQuestionIndex(0); } setReadMaterialIndex(0); setPreviewSlideIndex(0);
     const sourceSegments = [...(selectedSourceIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)).flatMap(fileSegments) || [])];
     const sessionQuestions = format === 'flashcards' ? flashcardDeck.map((card) => card.front) : questionList.length ? questionList : format === 'read' ? [] : draftPracticeQuestions(sourceSegments.map((segment) => segment.text).join('\n\n'));
     if (!questionList.length && format !== 'read' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
@@ -1429,7 +1633,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const removeSubjectFile = (fileId: string) => {
     const updatedFiles = activeSubject?.files.filter((file) => file.id !== fileId) || [];
-    if (Platform.OS === 'web') void deleteOriginalDocument(fileId).catch(() => undefined);
+    if (Platform.OS === 'web') { void deleteOriginalDocument(fileId).catch(() => undefined); if (activeSubjectId) void deleteVectorIndex(activeSubjectId, fileId).catch(() => undefined); }
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
     if (previewSourceId === fileId) { setPreviewSourceId(null); setSourceViewerOpen(false); }
     setSelectedSourceIds((previous) => previous.filter((id) => id !== fileId));
@@ -1546,8 +1750,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       window.localStorage.removeItem(storageKey); window.localStorage.removeItem(legacyStorageKey);
       void clearOriginalDocuments().catch(() => undefined);
       void clearWorkspaceSnapshot().catch(() => undefined);
+      void clearVectorIndexes().catch(() => undefined);
     }
-    setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
+    setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft(''); setFlashcardRatings({}); setFlashcardReviewDeck(null); setFlashcardSourceResult(null);
   };
 
   const startStudy = (pace: Pace = mode, firstQuestionIndex = 0) => {
@@ -1568,10 +1773,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const submitAnswer = (value: number) => {
     if (answer !== null) return;
-    const outcome: StudyAttempt['outcome'] = demoMaterial ? (value === correctAnswer ? 'correct' : 'missed') : (value === 1 ? 'self-rated-ready' : 'needs-review');
+    const gradedChoice = demoMaterial || !!currentImportedQuiz;
+    const outcome: StudyAttempt['outcome'] = gradedChoice ? (value === correctAnswer ? 'correct' : 'missed') : (value === 1 ? 'self-rated-ready' : 'needs-review');
     setAnswer(value);
     setAttempted((n) => n + 1);
-    if (demoMaterial && value === correctAnswer) setCorrect((n) => n + 1);
+    if (gradedChoice && value === correctAnswer) setCorrect((n) => n + 1);
     setHistory((previous) => [{ id: `${Date.now()}-${previous.length}`, question: currentQuestion, mode, outcome, createdAt: new Date().toISOString() }, ...previous].slice(0, 200));
   };
 
@@ -1582,9 +1788,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     else { setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setPage('insights'); }
   };
 
-  const quizPanel = demoMaterial ? <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? `QUESTION ${questionIndex + 1}` : 'RECALL CHECK'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text>
-    {currentDemoQuiz.options.map((option, i) => <Pressable key={i} onPress={() => submitAnswer(i)} style={{ borderWidth: 1, borderColor: answer === i ? (i === correctAnswer ? '#43c982' : '#db785b') : palette.line, backgroundColor: answer === i ? (i === correctAnswer ? 'rgba(33,129,91,0.28)' : 'rgba(217,120,91,0.20)') : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 14 }}><Text style={{ color: palette.ink, fontWeight: '600', fontSize: 14 }}>{String.fromCharCode(65 + i)}. {option}</Text></Pressable>)}
-    {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === correctAnswer ? 'rgba(33,129,91,0.20)' : 'rgba(217,120,91,0.16)', borderWidth: 1, borderColor: answer === correctAnswer ? 'rgba(67,201,130,0.48)' : 'rgba(217,120,91,0.45)' }}><Text style={{ color: answer === correctAnswer ? '#8ce0ae' : '#f0a38d', fontWeight: '800' }}>{answer === correctAnswer ? 'Correct.' : 'Not quite — check the source passage.'}</Text><Text style={[styles.small, { marginTop: 4, color: '#c3cfca' }]}>{currentDemoQuiz.feedback[answer]}</Text></View>}
+  const quizPanel = demoMaterial || currentImportedQuiz ? <View style={[styles.card, { gap: 16 }]}><Text style={styles.label}>{phase === 'diagnostic' ? `QUESTION ${questionIndex + 1}` : 'RECALL CHECK'}</Text>{currentImportedQuiz?.module && <Text style={styles.small}>{currentImportedQuiz.module}</Text>}<Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', lineHeight: 28 }}>{currentQuestion}</Text>
+    {quizOptions.map((option, i) => <Pressable key={i} accessibilityRole="button" accessibilityState={{ selected: answer === i }} disabled={answer !== null} onPress={() => submitAnswer(i)} style={{ borderWidth: 1, borderColor: answer === i ? (i === correctAnswer ? '#43c982' : '#db785b') : answer !== null && i === correctAnswer ? '#43c982' : palette.line, backgroundColor: answer === i ? (i === correctAnswer ? 'rgba(33,129,91,0.28)' : 'rgba(217,120,91,0.20)') : answer !== null && i === correctAnswer ? 'rgba(33,129,91,0.18)' : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 14 }}><Text style={{ color: palette.ink, fontWeight: '600', fontSize: 14 }}>{String.fromCharCode(65 + i)}. {option}</Text></Pressable>)}
+    {answer !== null && <View style={{ padding: 13, borderRadius: 11, backgroundColor: answer === correctAnswer ? 'rgba(33,129,91,0.20)' : 'rgba(217,120,91,0.16)', borderWidth: 1, borderColor: answer === correctAnswer ? 'rgba(67,201,130,0.48)' : 'rgba(217,120,91,0.45)' }}><Text style={{ color: answer === correctAnswer ? '#8ce0ae' : '#f0a38d', fontWeight: '800' }}>{answer === correctAnswer ? 'Correct.' : `Correct answer: ${String.fromCharCode(65 + correctAnswer)}. ${quizOptions[correctAnswer]}`}</Text><Text style={[styles.small, { marginTop: 4, color: '#c3cfca' }]}>{currentImportedQuiz?.optionExplanations?.[answer] || currentImportedQuiz?.explanation || currentDemoQuiz.feedback[answer]}</Text></View>}
     {answer !== null && phase === 'diagnostic' && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={hasNextQuestion ? 'Next diagnostic →' : 'Review module →'} onPress={continueSession} />{!hasNextQuestion && <ActionButton secondary label="Skip to quiz" onPress={() => void startQuiz()} />}</View>}
     {answer !== null && phase === 'check' && (answer !== correctAnswer ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Review this part →" onPress={openQuestionReview} /><ActionButton secondary label={hasNextQuestion ? 'Next question' : 'Finish quiz'} onPress={continueSession} /></View> : <ActionButton label={hasNextQuestion ? 'Next question →' : 'Finish quiz →'} onPress={continueSession} />)}
     {phase === 'diagnostic' && answer === null && <ActionButton secondary label="Skip diagnostic · read module" onPress={startModuleReading} />}
@@ -1603,6 +1809,41 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <View><Text style={styles.label}>QUESTION LINKED TO THIS SOURCE</Text><Text style={{ color: palette.ink, fontWeight: '800', fontSize: 19, lineHeight: 27, marginTop: 6 }}>{currentQuestion}</Text><Text style={[styles.small, { marginTop: 5 }]}>{currentMatch?.sourceLabel || 'No exact source match was found; review the closest available passage.'}</Text></View>
     {reviewFile ? <>{lecturePreview(reviewFile, currentQuestion, true)}<Text style={styles.small}>Highlighted context from the original material. The page layout stays intact.</Text></> : <View style={{ borderRadius: 11, padding: 13, borderWidth: 1, borderColor: 'rgba(245,216,94,0.25)', backgroundColor: 'rgba(245,216,94,0.07)' }}>{highlightedPassage(reviewPassage, currentQuestion)}</View>}
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Try this question again →" onPress={() => { setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); }} /><ActionButton secondary label="Back to module" onPress={startModuleReading} /></View>
+  </View>;
+
+  const navigateFlashcard = (direction: -1 | 1) => {
+    setQuestionIndex((index) => Math.max(0, Math.min(flashcardDeck.length - 1, index + direction)));
+    setPhase('diagnostic');
+    setFlashcardRevealed(false);
+    setFlashcardSourceResult(null);
+  };
+
+  const rateFlashcard = (rating: 'known' | 'unknown') => {
+    if (!currentFlashcardCard) return;
+    setFlashcardRatings((previous) => ({ ...previous, [flashcardKey(currentFlashcardCard)]: rating }));
+    setFlashcardSourceResult(null);
+    setFlashcardRevealed(false);
+    if (questionIndex < flashcardDeck.length - 1) setQuestionIndex((index) => index + 1);
+    else setPhase('flashcardsDone');
+  };
+
+  const reviewMissedFlashcards = () => {
+    setFlashcardReviewDeck(unknownFlashcards);
+    setQuestionIndex(0);
+    setFlashcardRevealed(false);
+    setFlashcardSourceResult(null);
+    setPhase('diagnostic');
+  };
+
+  const flashcardsDonePanel = <View testID="torch-block" style={[styles.card, { gap: 14, alignItems: 'flex-start' }]}>
+    <Text style={styles.label}>REVIEW COMPLETE</Text>
+    <Text style={{ color: palette.ink, fontSize: 23, lineHeight: 30, fontWeight: '800' }}>You reviewed {flashcardDeck.length} card{flashcardDeck.length === 1 ? '' : 's'}</Text>
+    <Text style={styles.body}>{knownFlashcardCount} known · {unknownFlashcards.length} to revisit</Text>
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>
+      {!!unknownFlashcards.length && <ActionButton label={`Review ${unknownFlashcards.length} missed`} onPress={reviewMissedFlashcards} />}
+      {!!flashcardDeck.length && <ActionButton secondary label="Back to last card" onPress={() => { setQuestionIndex(flashcardDeck.length - 1); setFlashcardRevealed(true); setPhase('diagnostic'); }} />}
+      <ActionButton secondary label="Done" onPress={() => setPage('import')} />
+    </View>
   </View>;
 
   const navItems = [
@@ -1696,7 +1937,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       </View>
       {materialsTab === 'add' ? <View style={{ gap: 14 }}>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{([['notes', 'Subject notes'], ['questions', 'Questions already asked']] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: addTab === id }} onPress={() => setAddTab(id)} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 18, backgroundColor: addTab === id ? 'rgba(33,129,91,0.3)' : 'rgba(255,255,255,0.04)' }}><Text style={{ color: addTab === id ? '#eaffef' : palette.muted, fontWeight: '700' }}>{label}</Text></Pressable>)}</View>
-      {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: compact ? 'column' : 'row', flexWrap: 'wrap', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}><ActionButton compact secondary disabled={busy} label={busy ? 'Importing…' : 'Import quiz results'} onPress={() => void importQuizResults()} /><ActionButton compact secondary disabled={busy} label="Upload question file" onPress={() => importFile('questions')} /></View></View>{!!importedFlashcards.length && <Text style={styles.small}>{importedFlashcards.length} answer cards saved from quiz results</Text>}<TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary disabled={aiBusy} label={aiBusy ? 'Writing questions…' : 'Draft practice questions with AI'} onPress={() => void generateQuestions()} /></View>}
+      {addTab === 'notes' ? <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Subject notes</Text><ActionButton compact secondary label="Upload PDF / DOCX / PPT / PPTX" onPress={() => importFile('module')} /></View><TextInput value={notes} onChangeText={(value) => { setNotes(value); setDemoMaterial(false); }} multiline placeholder="Paste or write notes for this subject…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /></View> : <View testID="torch-block" style={[styles.card, { gap: 12 }]}><View style={{ flexDirection: compact ? 'column' : 'row', flexWrap: 'wrap', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 10 }}><Text style={{ fontSize: 18, color: palette.ink, fontWeight: '800' }}>Questions already asked</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}><ActionButton compact secondary disabled={busy} label={busy ? 'Importing…' : 'Import quiz / Q&A'} onPress={() => void importQuizResults()} /><ActionButton compact secondary disabled={busy} label="Upload question file" onPress={() => importFile('questions')} /></View></View><Text style={styles.small}>Q&A files become answer cards. Files with options and an answer key stay multiple choice.</Text>{!!importedFlashcards.length && <Text style={styles.small}>{importedFlashcards.length} answer cards saved</Text>}{!!importedMultipleChoice.length && <Text style={styles.small}>{importedMultipleChoice.length} multiple-choice questions saved</Text>}<TextInput value={questionsText} onChangeText={(value) => { setQuestionsText(value); setDemoMaterial(false); }} multiline placeholder="Add one question per line…" placeholderTextColor="#9ba6ad" style={[styles.input, { minHeight: 220 }]} /><ActionButton compact secondary disabled={aiBusy} label={aiBusy ? 'Writing questions…' : 'Draft practice questions with AI'} onPress={() => void generateQuestions()} /></View>}
       </View> : materialsTab === 'summary' ? <View style={{ gap: 14 }}><StudySetStudio subjectName={activeSubject.name} materialCount={aiSelectedSourceCount} materialText={selectedAiMaterialText} sourceHash={aiStudySourceHash} questions={questionList} apiKeyConnected={!!apiKey} providerName={apiKey ? connectedProviderName : aiProviderName} studySet={activeSubject.aiStudySet} onConnectKey={() => setShowApiKeyModal(true)} onGenerate={generateStudySet} onSave={(studySet) => setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, aiStudySet: studySet } : subject))} /><View style={[styles.card, { gap: 11 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}><View><Text style={styles.label}>AI SUMMARY</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Key ideas and terms</Text></View><ActionButton compact secondary disabled={aiBusy || selectedAiMaterialText.trim().length < 40} label={aiBusy ? 'Working…' : aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? 'Refresh' : apiKey ? 'Generate' : 'Connect AI'} onPress={() => void generateSummary()} /></View>{aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? <><Text style={{ color: '#d9e3de', fontSize: 14, lineHeight: 21 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 6 }}>{aiSummary.result.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d9e3de' }]}>• {point}</Text>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 5 }}>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.small}>Generated from the sources currently selected above.</Text>}</View></View> : <View style={{ gap: 15 }}>
         <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><Text style={styles.body}>{sourceFiles.length ? `${sourceFiles.length} source${sourceFiles.length === 1 ? '' : 's'}` : 'Add lecture files, then choose which to study.'}</Text><ActionButton label={busy ? 'Reading files…' : 'Add source files'} onPress={() => importFile('module')} /></View>
         {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
@@ -1709,10 +1950,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         </View>}
         {activeSubject.files.filter((file) => file.role === 'questions').map((file) => <View key={file.id} style={[styles.card, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: 15 }]}><View style={{ flex: 1, minWidth: 180 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Question file · {file.text.trim().split(/\s+/).length} words</Text></View><ActionButton compact secondary label="Load questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>)}
         {!notes.trim() && !activeSubject.files.some((file) => file.role === 'source' || file.role === 'questions') && <View style={[styles.card, { alignItems: 'center', paddingVertical: 35, gap: 8 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>No sources yet</Text><Text style={[styles.body, { textAlign: 'center' }]}>Upload lecture material or add subject notes to get started.</Text></View>}
-        {(!!notes.trim() || activeSubject.files.some((file) => file.role === 'source') || !!importedFlashcards.length) && <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><View><Text style={styles.label}>{notes.trim() || sourceFiles.length ? 'STUDY SOURCES' : 'FLASHCARDS'}</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 4 }}>{notes.trim() || sourceFiles.length ? 'Study selected sources' : `${importedFlashcards.length} quiz answer cards ready`}</Text></View>{(notes.trim() || sourceFiles.length > 0) && <Pressable accessibilityRole="button" onPress={selectAllStudySources} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedSourceIds.length === (activeSubject.files.filter((file) => file.role === 'source').length + (notes.trim() ? 1 : 0)) ? 'Clear selection' : 'Select all sources'}</Text></Pressable>}</View>
+        {(!!notes.trim() || activeSubject.files.some((file) => file.role === 'source') || !!allFlashcards.length || !!importedMultipleChoice.length) && <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><View><Text style={styles.label}>{notes.trim() || sourceFiles.length ? 'STUDY SOURCES' : 'QUESTION BANK'}</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 4 }}>{notes.trim() || sourceFiles.length ? 'Study selected sources' : `${allFlashcards.length} cards · ${importedMultipleChoice.length} quiz questions`}</Text></View>{(notes.trim() || sourceFiles.length > 0) && <Pressable accessibilityRole="button" onPress={selectAllStudySources} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedSourceIds.length === (activeSubject.files.filter((file) => file.role === 'source').length + (notes.trim() ? 1 : 0)) ? 'Clear selection' : 'Select all sources'}</Text></Pressable>}</View>
           {!!selectedSourceIds.length && <Text style={styles.small}>{selectedSourceIds.length} selected</Text>}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Flashcard review" disabled={!selectedSourceIds.length && !importedFlashcards.length} onPress={() => beginStudyFormat('flashcards')} /><ActionButton secondary label="Q&A practice" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('qa')} /><ActionButton secondary label="Read sources" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('read')} /></View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Flashcard review" disabled={!selectedSourceIds.length && !allFlashcards.length} onPress={() => beginStudyFormat('flashcards')} /><ActionButton secondary label="Q&A practice" disabled={!selectedSourceIds.length && !questionList.length} onPress={() => beginStudyFormat('qa')} /><ActionButton secondary label="Read sources" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('read')} />{!!selectedRagSources.length && <ActionButton compact secondary disabled={ragBusy} label={ragBusy ? 'Preparing…' : 'Prepare source lookup'} onPress={() => { if (!apiKey) { setShowApiKeyModal(true); return; } setRagBusy(true); void indexSelectedSources().then((records) => notify(`Source lookup ready · ${records.length} passages indexed.`)).catch((error) => notify(error instanceof Error ? error.message : 'Could not prepare source lookup.')).finally(() => { setRagBusy(false); setRagProgress(''); }); }} />}</View>
+          {!!ragProgress && <Text style={styles.small}>{ragProgress}</Text>}
         </View>}
         {!!questionList.length && <View style={{ gap: 9 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showMatchReview }} onPress={() => { if (!matches.length) matchQuestions(); else setShowMatchReview((open) => !open); }} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, gap: 8 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>Question-to-source review</Text><Text style={styles.small}>{matches.length || questionList.length} questions</Text><Text style={{ color: palette.muted }}>{showMatchReview ? '⌃' : '⌄'}</Text></Pressable><ActionButton compact secondary label="Refresh matches" onPress={matchQuestions} /></View>
@@ -1748,11 +1990,106 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const studyScreen = <View style={styles.content}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}><View><Text style={styles.label}>{mode.toUpperCase()} MODE · {displayModuleTitle.toUpperCase()}</Text><Text style={[styles.title, { marginTop: 7 }]}>{phase === 'overview' ? 'Start with the big picture' : phase === 'module' ? 'Review the module' : phase === 'diagnostic' ? 'Quick diagnostic' : phase === 'review' ? 'Review this part' : 'Take the quiz'}</Text></View><ActionButton label="Exit session" secondary onPress={() => setPage('home')} /></View>
     <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>{Array.from({ length: phaseTotal }, (_, index) => <View key={index} style={{ height: 6, flex: 1, backgroundColor: index < phaseStep ? (index + 1 === phaseStep ? palette.yellow : palette.green) : palette.line, borderRadius: 5 }} />)}<Text style={styles.small}>{phaseStep} of {phaseTotal} · {phaseDescription}</Text></View>
-    {phase === 'overview' ? overviewPanel : phase === 'review' ? reviewPanel : phase === 'module' && studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file, fileIndex) => fileIndex === readMaterialIndex ? <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><View><Text style={styles.label}>MATERIAL {fileIndex + 1} OF {selectedStudyFiles.length}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800', marginTop: 3 }}>{file.name}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary disabled={fileIndex <= 0} label="← Previous material" onPress={() => navigateReadMaterial(-1)} /><ActionButton compact secondary disabled={fileIndex >= selectedStudyFiles.length - 1} label="Next material →" onPress={() => navigateReadMaterial(1)} /></View></View>{lecturePreview(file, undefined, true)}<View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 7 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable><ActionButton compact label="Take quiz now →" onPress={() => void startQuiz()} /></View>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found.'}</Text>}</View> : null)}{!selectedStudyFiles.length && <ActionButton label="Take quiz now →" onPress={() => void startQuiz()} />}</View> : studyFormat === 'flashcards' ? <View testID="torch-block" style={[styles.card, { minHeight: 300, justifyContent: 'space-between', gap: 18 }]}><View style={{ gap: 10 }}><Text style={styles.label}>FLASHCARD {questionIndex + 1} OF {Math.max(1, flashcardDeck.length)}</Text><Text style={{ color: palette.ink, fontSize: 23, lineHeight: 32, fontWeight: '800' }}>{currentFlashcardCard?.front || 'What is the most important idea in this source?'}</Text></View>{flashcardRevealed ? <View style={{ borderRadius: 12, borderWidth: 1, borderColor: 'rgba(245,216,94,0.3)', backgroundColor: 'rgba(245,216,94,0.08)', padding: compact ? 11 : 15, gap: 10 }}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 6 }}><View style={{ flex: 1 }}><Text style={styles.label}>{currentFlashcardCard?.back ? 'ANSWER FROM QUIZ RESULT' : currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) ? 'ORIGINAL SOURCE' : 'SOURCE CONTEXT'}</Text><Text numberOfLines={1} style={{ color: palette.ink, fontWeight: '800', marginTop: 3 }}>{currentFlashcardCard?.back ? currentFlashcardCard.source : currentFlashcardFile?.name || currentFlashcardMatch?.sourceLabel || 'Selected study material'}</Text></View>{currentFlashcardMatch?.sourceLabel && <Text style={styles.small}>{currentFlashcardMatch.sourceLabel.split(' · ').slice(-1)[0]}</Text>}</View>
-      {currentFlashcardCard?.back && <Text style={{ color: palette.ink, fontSize: 17, lineHeight: 25, fontWeight: '700' }}>{currentFlashcardCard.back}</Text>}
-      {currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) && <><RenderedPagePreview fileId={currentFlashcardFile.id} fileName={currentFlashcardFile.name} pageIndex={sourceCheckPageIndex} highlightPhrases={[flashcardEvidence]} fallbackText={flashcardPageSegment?.text || flashcardEvidence} /><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><ActionButton compact secondary disabled={sourceCheckPageIndex <= 0} label="← Page" onPress={() => setSourceCheckPageIndex((index) => Math.max(0, index - 1))} /><Text style={styles.small}>Page {sourceCheckPageIndex + 1} of {flashcardPageCount} · ← / → to flip</Text><ActionButton compact secondary disabled={sourceCheckPageIndex >= flashcardPageCount - 1} label="Page →" onPress={() => setSourceCheckPageIndex((index) => Math.min(flashcardPageCount - 1, index + 1))} /></View></>}
-      {!!flashcardEvidence && <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, paddingLeft: 10, paddingVertical: 4 }}><Text style={styles.label}>RELEVANT CONTEXT</Text><Text style={{ color: palette.ink, fontSize: 14, lineHeight: 21, marginTop: 4 }}>{flashcardEvidence}</Text></View>}
-      {!currentFlashcardFile && !flashcardEvidence && !currentFlashcardCard?.back && <Text style={styles.body}>Review the selected source and write the answer in your own words.</Text>}</View> : <Text style={styles.body}>Try to answer from memory, then reveal the linked source to check.</Text>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label={flashcardRevealed ? (questionIndex < flashcardDeck.length - 1 ? 'Next card →' : 'Review again ↻') : 'Reveal answer'} onPress={() => { if (flashcardRevealed) { setQuestionIndex((index) => index < flashcardDeck.length - 1 ? index + 1 : 0); setFlashcardRevealed(false); } else { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); setFlashcardRevealed(true); } }} />{flashcardRevealed && <ActionButton secondary label="Finish cards" onPress={() => setPage('import')} />}</View></View> : phase === 'module' ? reviewPanel : quizPanel}
+    {phase === 'overview' ? overviewPanel : phase === 'review' ? reviewPanel : phase === 'flashcardsDone' ? flashcardsDonePanel : phase === 'module' && studyFormat === 'read' ? <View style={{ gap: 14 }}>{selectedSourceIds.includes('__notes__') && !!notes.trim() && <View testID="torch-block" style={[styles.card, { gap: 8 }]}><Text style={styles.label}>SUBJECT NOTES</Text><Text style={{ color: palette.ink, fontSize: 15, lineHeight: 25 }}>{notes}</Text></View>}{selectedStudyFiles.map((file, fileIndex) => fileIndex === readMaterialIndex ? <View key={file.id} testID="torch-block" style={[styles.card, { gap: 10 }]}><View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><View><Text style={styles.label}>MATERIAL {fileIndex + 1} OF {selectedStudyFiles.length}</Text><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800', marginTop: 3 }}>{file.name}</Text></View><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}><ActionButton compact secondary disabled={fileIndex <= 0} label="← Previous material" onPress={() => navigateReadMaterial(-1)} /><ActionButton compact secondary disabled={fileIndex >= selectedStudyFiles.length - 1} label="Next material →" onPress={() => navigateReadMaterial(1)} /></View></View>{lecturePreview(file, undefined, true)}<View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: showExtractedText }} onPress={() => setShowExtractedText((shown) => !shown)} style={{ minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 7 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>{showExtractedText ? 'Hide extracted text' : 'View extracted text'}</Text></Pressable><ActionButton compact label="Take quiz now →" onPress={() => void startQuiz()} /></View>{showExtractedText && <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 23 }}>{file.text || 'No selectable text was found.'}</Text>}</View> : null)}{!selectedStudyFiles.length && <ActionButton label="Take quiz now →" onPress={() => void startQuiz()} />}</View> : studyFormat === 'flashcards' ? <View style={{ gap: 14 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={flashcardRevealed ? 'Flashcard answer. Tap to show the question.' : 'Flashcard question. Tap to reveal the answer.'}
+        accessibilityState={{ expanded: flashcardRevealed }}
+        onPress={() => {
+          if (!flashcardRevealed) setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch));
+          setFlashcardRevealed((revealed) => !revealed);
+        }}
+        style={{ height: compact ? 300 : 340, position: 'relative' }}
+      >
+        <Animated.View
+          testID="torch-block"
+          style={[
+            styles.card,
+            {
+              position: 'absolute', inset: 0, justifyContent: 'center', gap: 16,
+              backfaceVisibility: 'hidden', opacity: flashcardFrontOpacity,
+              transform: [{ perspective: 1000 }, { rotateY: flashcardFrontRotation }],
+              borderColor: 'rgba(184,232,199,0.32)',
+              backgroundColor: 'rgba(17,39,31,0.94)',
+            },
+          ]}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.label}>{currentFlashcardRating === 'known' ? 'KNOWN' : currentFlashcardRating === 'unknown' ? 'REVISIT' : 'QUESTION'}</Text>
+            <Text style={styles.small}>{questionIndex + 1} / {Math.max(1, flashcardDeck.length)}</Text>
+          </View>
+          <Text style={{ color: palette.ink, fontSize: compact ? 22 : 28, lineHeight: compact ? 31 : 38, fontWeight: '800' }}>
+            {currentFlashcardCard?.front || 'What is the most important idea in this source?'}
+          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            <Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↻</Text>
+            <Text style={styles.small}>Tap card to reveal answer</Text>
+          </View>
+        </Animated.View>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.card,
+            {
+              position: 'absolute', inset: 0, justifyContent: 'center', gap: 14,
+              backfaceVisibility: 'hidden', opacity: flashcardBackOpacity,
+              transform: [{ perspective: 1000 }, { rotateY: flashcardBackRotation }],
+              borderColor: 'rgba(245,216,94,0.34)',
+              backgroundColor: 'rgba(37,39,21,0.96)',
+            },
+          ]}
+        >
+          <Text style={styles.label}>{currentFlashcardCard?.back ? 'ANSWER' : 'THINK IT THROUGH'}</Text>
+          <Text style={{ color: palette.ink, fontSize: compact ? 18 : 22, lineHeight: compact ? 27 : 32, fontWeight: '700' }}>
+            {currentFlashcardCard?.back || flashcardEvidence || 'Review the selected source and write the answer in your own words.'}
+          </Text>
+          {(currentFlashcardCard?.source || currentFlashcardMatch?.sourceLabel) && (
+            <Text style={[styles.small, { marginTop: 6 }]}>
+              {currentFlashcardCard?.source || currentFlashcardMatch?.sourceLabel}
+            </Text>
+          )}
+          <Text style={[styles.small, { marginTop: 8 }]}>Tap card to show question</Text>
+        </Animated.View>
+      </Pressable>
+      {flashcardRevealed && (currentFlashcardFile || flashcardEvidence) && (
+        <View testID="torch-block" style={[styles.card, { gap: 12, borderColor: 'rgba(245,216,94,0.3)' }]}>
+          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 6 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>{currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) ? 'SOURCE PAGE' : 'SOURCE CONTEXT'}</Text>
+              <Text numberOfLines={1} style={{ color: palette.ink, fontWeight: '800', marginTop: 3 }}>
+                {currentFlashcardFile?.name || currentFlashcardMatch?.sourceLabel || 'Selected study material'}
+              </Text>
+            </View>
+            {currentFlashcardMatch?.sourceLabel && <Text style={styles.small}>{currentFlashcardMatch.sourceLabel.split(' · ').slice(-1)[0]}</Text>}
+          </View>
+          {currentFlashcardFile && /\.(?:pdf|pptx?)$/i.test(currentFlashcardFile.name) && (
+            <>
+              <RenderedPagePreview fileId={currentFlashcardFile.id} fileName={currentFlashcardFile.name} pageIndex={sourceCheckPageIndex} highlightPhrases={[flashcardEvidence]} fallbackText={flashcardPageSegment?.text || flashcardEvidence} />
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <ActionButton compact secondary disabled={sourceCheckPageIndex <= 0} label="← Page" onPress={() => setSourceCheckPageIndex((index) => Math.max(0, index - 1))} />
+                <Text style={styles.small}>Page {sourceCheckPageIndex + 1} of {flashcardPageCount} · ← / →</Text>
+                <ActionButton compact secondary disabled={sourceCheckPageIndex >= flashcardPageCount - 1} label="Page →" onPress={() => setSourceCheckPageIndex((index) => Math.min(flashcardPageCount - 1, index + 1))} />
+              </View>
+            </>
+          )}
+          {!!flashcardEvidence && (
+            <View style={{ borderLeftWidth: 3, borderColor: palette.yellow, paddingLeft: 10, paddingVertical: 4 }}>
+              <Text style={styles.label}>RELEVANT CONTEXT</Text>
+              <Text style={{ color: palette.ink, fontSize: 14, lineHeight: 21, marginTop: 4 }}>{flashcardEvidence}</Text>
+            </View>
+          )}
+        </View>
+      )}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>
+        <ActionButton compact secondary disabled={questionIndex <= 0} label="← Previous" onPress={() => navigateFlashcard(-1)} />
+        {!flashcardRevealed && <ActionButton label="Reveal answer" onPress={() => { setSourceCheckPageIndex(Math.max(0, flashcardPageFromMatch)); setFlashcardRevealed(true); }} />}
+        {flashcardRevealed && <>
+          <ActionButton compact secondary label={ragBusy ? 'Searching…' : 'Find in sources'} disabled={ragBusy} onPress={() => void findFlashcardSource()} />
+          <ActionButton compact secondary label="I don’t know" onPress={() => rateFlashcard('unknown')} />
+          <ActionButton compact label="Know" onPress={() => rateFlashcard('known')} />
+        </>}
+      </View>
+    </View> : phase === 'module' ? reviewPanel : quizPanel}
   </View>;
 
   const readyCount = history.filter((attempt) => attempt.outcome === 'correct' || attempt.outcome === 'self-rated-ready').length;
