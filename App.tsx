@@ -742,6 +742,7 @@ export default function App() {
   const [flashcardRevealed, setFlashcardRevealed] = useState(false);
   const [showExtractedText, setShowExtractedText] = useState(false);
   const [previewSourceId, setPreviewSourceId] = useState<string | null>(null);
+  const [sourceViewerOpen, setSourceViewerOpen] = useState(false);
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
   const [sourceCheckPageIndex, setSourceCheckPageIndex] = useState(0);
   const [sourceReader, setSourceReader] = useState<SourceReader | null>(null);
@@ -1021,7 +1022,7 @@ export default function App() {
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    const pageFile = page === 'study' && studyFormat === 'flashcards' && flashcardRevealed ? currentFlashcardFile : page === 'study' && studyFormat === 'read' ? selectedStudyFiles[readMaterialIndex] || null : page === 'import' && materialsTab === 'sources' ? visibleSourceFile : null;
+    const pageFile = page === 'study' && studyFormat === 'flashcards' && flashcardRevealed ? currentFlashcardFile : page === 'study' && studyFormat === 'read' ? selectedStudyFiles[readMaterialIndex] || null : page === 'import' && materialsTab === 'sources' && sourceViewerOpen ? visibleSourceFile : null;
     if (!pageFile || !/\.(?:pdf|pptx?)$/i.test(pageFile.name)) return;
     const pageCount = page === 'study' && studyFormat === 'flashcards' ? flashcardPageCount : fileSegments(pageFile).length;
     if (pageCount < 2) return;
@@ -1035,7 +1036,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [page, studyFormat, flashcardRevealed, currentFlashcardFile?.id, flashcardPageCount, materialsTab, visibleSourceFile?.id, readMaterialIndex, selectedStudyFiles.map((file) => file.id).join('|')]);
+  }, [page, studyFormat, flashcardRevealed, currentFlashcardFile?.id, flashcardPageCount, materialsTab, sourceViewerOpen, visibleSourceFile?.id, readMaterialIndex, selectedStudyFiles.map((file) => file.id).join('|')]);
 
   const moveSourceFile = (fileId: string, direction: -1 | 1) => {
     setSubjects((previous) => previous.map((subject) => {
@@ -1059,6 +1060,13 @@ export default function App() {
     setPreviewSourceId(nextFile.id);
     setPreviewSlideIndex(0);
     setShowExtractedText(false);
+  };
+
+  const openSourceViewer = (file: StudyFile) => {
+    setPreviewSourceId(file.id);
+    setPreviewSlideIndex(0);
+    setShowExtractedText(false);
+    setSourceViewerOpen(true);
   };
 
   const navigateReadMaterial = (direction: -1 | 1) => {
@@ -1254,7 +1262,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       setHistory(Array.isArray(incoming.history) ? incoming.history as StudyAttempt[] : []); setSelectedSourceId(typeof incoming.selectedSourceId === 'string' ? incoming.selectedSourceId : null);
       setSelectedSourceIds(Array.isArray(incoming.selectedSourceIds) ? incoming.selectedSourceIds.filter((id): id is string => typeof id === 'string') : []);
       setSourceScope(incoming.sourceScope === 'file' || incoming.sourceScope === 'notes' || incoming.sourceScope === 'selected' ? incoming.sourceScope : 'subject');
-      setFolderOpen(false); setPreviewSourceId(null); setSourceReader(null); setConfirmRestoreBackup(false); setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
+      setFolderOpen(false); setPreviewSourceId(null); setSourceViewerOpen(false); setSourceReader(null); setConfirmRestoreBackup(false); setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft('');
       notify(`Restored ${restoredSubjects.length} folder${restoredSubjects.length === 1 ? '' : 's'} and ${originals.length} original file${originals.length === 1 ? '' : 's'}.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not restore this backup. Your current workspace was kept.');
@@ -1268,7 +1276,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!name) { notify('Enter a subject name, such as Physics.'); return; }
     const created: Subject = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, notes: '', questionsText: '', files: [] };
     setSubjects((previous) => [...previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject), created]);
-    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false); setNewSubjectName('');
+    setActiveSubjectId(created.id); setNotes(''); setQuestionsText(''); setMatches([]); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceViewerOpen(false); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false); setNewSubjectName('');
     notify(`${name} is ready. Add notes or upload source files to this subject.`);
   };
 
@@ -1277,7 +1285,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!next) return;
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject));
     setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([...asStudySegments(next.notes), ...next.files.filter((file) => file.role === 'source').flatMap(fileSegments)], splitQuestions(next.questionsText)));
-    setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false);
+    setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceViewerOpen(false); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false);
   };
 
   const openSubject = (id: string) => {
@@ -1302,6 +1310,14 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     setSelectedSourceIds(nextIds); setSelectedSourceId(null); setSourceScope('selected'); setMatches(buildMatches(nextSegments, questionList));
   };
 
+  const selectAllSourceFiles = () => {
+    const fileIds = sourceFiles.map((file) => file.id);
+    const filesAlreadySelected = fileIds.length > 0 && fileIds.every((id) => selectedSourceIds.includes(id));
+    const nextIds = filesAlreadySelected ? selectedSourceIds.filter((id) => id === '__notes__') : [...new Set([...selectedSourceIds, ...fileIds])];
+    const nextSegments = [...(nextIds.includes('__notes__') ? asStudySegments(notes) : []), ...sourceFiles.filter((file) => nextIds.includes(file.id)).flatMap(fileSegments)];
+    setSelectedSourceIds(nextIds); setSelectedSourceId(null); setSourceScope('selected'); setMatches(buildMatches(nextSegments, questionList));
+  };
+
   const beginStudyFormat = (format: 'flashcards' | 'qa' | 'read') => {
     if (!selectedSourceIds.length) { notify('Select at least one source to study.'); return; }
     setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); setReadMaterialIndex(0); setPreviewSlideIndex(0);
@@ -1322,14 +1338,14 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     }
     setSourceToFile(file);
     setPreviewSlideIndex(0);
-    setPreviewSourceId((previous) => previous === file.id ? null : file.id);
+    openSourceViewer(file);
   };
 
   const removeSubjectFile = (fileId: string) => {
     const updatedFiles = activeSubject?.files.filter((file) => file.id !== fileId) || [];
     if (Platform.OS === 'web') void deleteOriginalDocument(fileId).catch(() => undefined);
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
-    if (previewSourceId === fileId) setPreviewSourceId(null);
+    if (previewSourceId === fileId) { setPreviewSourceId(null); setSourceViewerOpen(false); }
     setSelectedSourceIds((previous) => previous.filter((id) => id !== fileId));
     if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([...asStudySegments(notes), ...updatedFiles.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }
   };
@@ -1394,7 +1410,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
 
   const clearWorkspace = () => {
     setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]); setSelectedSourceIds([]);
-    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setPreviewSlideIndex(0); setShowExtractedText(false); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
+    setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceViewerOpen(false); setPreviewSlideIndex(0); setShowExtractedText(false); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
     if (Platform.OS === 'web') {
       window.localStorage.removeItem(storageKey); window.localStorage.removeItem(legacyStorageKey);
       void clearOriginalDocuments().catch(() => undefined);
@@ -1535,13 +1551,12 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       </View> : materialsTab === 'summary' ? <View style={{ gap: 14 }}><StudySetStudio subjectName={activeSubject.name} materialCount={aiSelectedSourceCount} materialText={selectedAiMaterialText} sourceHash={aiStudySourceHash} questions={questionList} apiKeyConnected={!!apiKey} providerName={apiKey ? connectedProviderName : aiProviderName} studySet={activeSubject.aiStudySet} onConnectKey={() => setShowApiKeyModal(true)} onGenerate={generateStudySet} onSave={(studySet) => setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, aiStudySet: studySet } : subject))} /><View style={[styles.card, { gap: 11 }]}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}><View><Text style={styles.label}>AI SUMMARY</Text><Text style={{ color: palette.ink, fontSize: 17, fontWeight: '800', marginTop: 4 }}>Key ideas and terms</Text></View><ActionButton compact secondary disabled={aiBusy || selectedAiMaterialText.trim().length < 40} label={aiBusy ? 'Working…' : aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? 'Refresh' : apiKey ? 'Generate' : 'Connect AI'} onPress={() => void generateSummary()} /></View>{aiSummary?.subjectId === activeSubject.id && aiSummary.sourceHash === aiSourceHash ? <><Text style={{ color: '#d9e3de', fontSize: 14, lineHeight: 21 }}>{aiSummary.result.summary}</Text>{!!aiSummary.result.keyPoints.length && <View style={{ gap: 6 }}>{aiSummary.result.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d9e3de' }]}>• {point}</Text>)}</View>}{!!aiSummary.result.vocabulary.length && <View style={{ gap: 5 }}>{aiSummary.result.vocabulary.map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <Text style={styles.small}>Generated from the sources currently selected above.</Text>}</View></View> : <View style={{ gap: 15 }}>
         <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8 }}><Text style={styles.body}>{sourceFiles.length ? `${sourceFiles.length} source${sourceFiles.length === 1 ? '' : 's'}` : 'Add lecture files, then choose which to study.'}</Text><ActionButton label={busy ? 'Reading files…' : 'Add source files'} onPress={() => importFile('module')} /></View>
         {!!notes.trim() && <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes('__notes__') }} onPress={() => toggleStudySource('__notes__')} testID="torch-block" style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderColor: selectedSourceIds.includes('__notes__') ? 'rgba(90,210,141,0.55)' : palette.line }]}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes('__notes__') ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes('__notes__') ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes('__notes__') ? '✓' : ''}</Text></View><View style={{ flex: 1 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>Subject notes</Text></View><Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); setAddTab('notes'); setMaterialsTab('add'); }}><Text style={{ color: '#9fe1b5', fontWeight: '800', padding: 8 }}>Edit</Text></Pressable></Pressable>}
-        {!!visibleSourceFile && <View style={[styles.card, { gap: 12, padding: compact ? 14 : 18 }]}>
-          <View style={{ flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 10 }}>
-            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 11 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(visibleSourceFile.id) }} accessibilityLabel={`Select ${visibleSourceFile.name} for study`} onPress={() => toggleStudySource(visibleSourceFile.id)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(visibleSourceFile.id) ? '✓' : ''}</Text></View></Pressable><View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>MATERIAL {visibleSourceIndex + 1} OF {sourceFiles.length}</Text><Text numberOfLines={2} style={{ color: palette.ink, fontWeight: '800', fontSize: 16 }}>{visibleSourceFile.name}</Text></View></View>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5 }}><Pressable accessibilityRole="button" accessibilityLabel="Move source earlier" disabled={visibleSourceIndex === 0} onPress={() => moveSourceFile(visibleSourceFile.id, -1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: visibleSourceIndex === 0 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↑</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Move source later" disabled={visibleSourceIndex === sourceFiles.length - 1} onPress={() => moveSourceFile(visibleSourceFile.id, 1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: visibleSourceIndex === sourceFiles.length - 1 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↓</Text></Pressable><ActionButton compact secondary label="Delete" onPress={() => removeSubjectFile(visibleSourceFile.id)} /></View>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><ActionButton compact secondary disabled={visibleSourceIndex === 0} label="← Previous material" onPress={() => navigateSourceFile(-1)} /><Text style={styles.small}>{selectedSourceIds.includes(visibleSourceFile.id) ? 'Selected for study' : 'Not selected'}</Text><ActionButton compact secondary disabled={visibleSourceIndex >= sourceFiles.length - 1} label="Next material →" onPress={() => navigateSourceFile(1)} /></View>
-          <View style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 12, gap: 9 }}>{lecturePreview(visibleSourceFile)}</View>
+        {!!sourceFiles.length && <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><Text style={styles.label}>SOURCES · {sourceFiles.length}</Text><Pressable accessibilityRole="button" onPress={selectAllSourceFiles} style={{ minHeight: 40, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{sourceFiles.every((file) => selectedSourceIds.includes(file.id)) ? 'Clear file selection' : 'Select all files'}</Text></Pressable></View>
+          {sourceFiles.map((file, index) => <View key={file.id} style={[styles.card, { flexDirection: compact ? 'column' : 'row', flexWrap: 'wrap', alignItems: compact ? 'stretch' : 'center', gap: 10, padding: compact ? 13 : 15 }]}>
+            <View style={{ flex: 1, minWidth: compact ? 0 : 220, flexDirection: 'row', alignItems: 'center', gap: 10 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(file.id) }} accessibilityLabel={`Select ${file.name} for study`} onPress={() => toggleStudySource(file.id)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(file.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(file.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(file.id) ? '✓' : ''}</Text></View></Pressable><View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>MATERIAL {index + 1} OF {sourceFiles.length}</Text><Text numberOfLines={2} style={{ color: palette.ink, fontWeight: '800', fontSize: 15 }}>{file.name}</Text><Text style={styles.small}>{selectedSourceIds.includes(file.id) ? 'Selected for study' : 'Not selected'} · {file.name.match(/\.pdf$/i) ? `${fileSegments(file).length} pages` : file.name.match(/\.pptx?$/i) ? `${fileSegments(file).length} slides` : `${file.text.trim().split(/\s+/).filter(Boolean).length} words`}</Text></View></View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5 }}><Pressable accessibilityRole="button" accessibilityLabel={`Move ${file.name} earlier`} disabled={index === 0} onPress={() => moveSourceFile(file.id, -1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: index === 0 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↑</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Move ${file.name} later`} disabled={index === sourceFiles.length - 1} onPress={() => moveSourceFile(file.id, 1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: index === sourceFiles.length - 1 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↓</Text></Pressable><ActionButton compact secondary label="Preview" onPress={() => openSourceViewer(file)} /><ActionButton compact secondary label="Delete" onPress={() => removeSubjectFile(file.id)} /></View>
+          </View>)}
         </View>}
         {activeSubject.files.filter((file) => file.role === 'questions').map((file) => <View key={file.id} style={[styles.card, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: 15 }]}><View style={{ flex: 1, minWidth: 180 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Question file · {file.text.trim().split(/\s+/).length} words</Text></View><ActionButton compact secondary label="Load questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>)}
         {!notes.trim() && !activeSubject.files.some((file) => file.role === 'source' || file.role === 'questions') && <View style={[styles.card, { alignItems: 'center', paddingVertical: 35, gap: 8 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>No sources yet</Text><Text style={[styles.body, { textAlign: 'center' }]}>Upload lecture material or add subject notes to get started.</Text></View>}
@@ -1608,6 +1623,18 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         </ScrollView>
       </View>
     </View>
+    <Modal visible={sourceViewerOpen && !!visibleSourceFile} transparent animationType="fade" onRequestClose={() => setSourceViewerOpen(false)}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.82)', justifyContent: 'center', alignItems: 'center', padding: compact ? 10 : 22 }}>
+        {visibleSourceFile && <View style={[styles.card, { width: '100%', maxWidth: 1120, maxHeight: '94%', gap: 12, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)', padding: compact ? 13 : 20 }]}>
+          <View style={{ flexDirection: compact ? 'column' : 'row', justifyContent: 'space-between', alignItems: compact ? 'stretch' : 'flex-start', gap: 10 }}>
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 9 }}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selectedSourceIds.includes(visibleSourceFile.id) }} accessibilityLabel={`Select ${visibleSourceFile.name} for study`} onPress={() => toggleStudySource(visibleSourceFile.id)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#7fd79a' : palette.line, backgroundColor: selectedSourceIds.includes(visibleSourceFile.id) ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selectedSourceIds.includes(visibleSourceFile.id) ? '✓' : ''}</Text></View></Pressable><View style={{ flex: 1, minWidth: 0 }}><Text style={styles.label}>MATERIAL {visibleSourceIndex + 1} OF {sourceFiles.length} · {selectedSourceIds.includes(visibleSourceFile.id) ? 'SELECTED' : 'NOT SELECTED'}</Text><Text numberOfLines={2} style={{ color: palette.ink, fontWeight: '800', fontSize: compact ? 16 : 18 }}>{visibleSourceFile.name}</Text></View></View>
+            <ActionButton compact secondary label="Close viewer" onPress={() => setSourceViewerOpen(false)} />
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, borderTopWidth: 1, borderColor: palette.line, paddingTop: 10 }}><ActionButton compact secondary disabled={visibleSourceIndex <= 0} label="← Previous material" onPress={() => navigateSourceFile(-1)} /><Text style={styles.small}>Selection stays as you browse</Text><ActionButton compact secondary disabled={visibleSourceIndex >= sourceFiles.length - 1} label="Next material →" onPress={() => navigateSourceFile(1)} /></View>
+          <ScrollView style={{ flexShrink: 1, minHeight: 0 }} contentContainerStyle={{ gap: 10, paddingBottom: 5 }} keyboardShouldPersistTaps="handled">{lecturePreview(visibleSourceFile)}</ScrollView>
+        </View>}
+      </View>
+    </Modal>
     <Modal visible={showApiKeyModal} transparent animationType="fade" onRequestClose={() => setShowApiKeyModal(false)}>
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center', padding: compact ? 12 : 20 }}>
         <View style={[styles.card, { width: '100%', maxWidth: 520, gap: 14, backgroundColor: '#0b1913', borderColor: 'rgba(143,203,166,0.35)', padding: compact ? 16 : 22 }]}>
