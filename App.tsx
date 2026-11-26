@@ -1868,10 +1868,10 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <View testID="nav-glass-indicator" pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: 0, height: 0, borderRadius: 24 }} />
     {navItems.map((item) => { const active = activeNavId === item.id; return <Pressable key={item.id} testID={`nav-item-${item.id}`} onPress={() => setPage(item.id)} style={{ zIndex: 1, minHeight: 42, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 18, backgroundColor: Platform.OS === 'web' ? 'transparent' : active ? 'rgba(33,129,91,0.40)' : 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: Platform.OS !== 'web' && active ? 'rgba(90,210,141,0.28)' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: active ? '#eaffef' : '#b9c5c0', fontWeight: '700', fontSize: 12 }}>{item.label}</Text></Pressable>; })}
   </View>;
-  const fixedHeader = <View style={[styles.header, { minHeight: compact ? 116 : 78, flexWrap: 'wrap', gap: compact ? 7 : 12, paddingTop: compact ? 6 : 0, paddingBottom: compact ? 8 : 0 }]}>
+  const fixedHeader = <View style={[styles.header, { minHeight: compact ? 116 : 92, flexWrap: 'wrap', gap: compact ? 7 : 12, paddingTop: compact ? 6 : 14, paddingBottom: compact ? 8 : 0 }]}>
     {brand}
     {compact && <View style={{ marginLeft: 'auto' }}>{registerButton}</View>}
-    {wide && <View style={{ position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', pointerEvents: 'box-none' }}>{pinnedNav}</View>}
+    {wide && <View style={{ position: 'absolute', top: 14, bottom: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', pointerEvents: 'box-none' }}>{pinnedNav}</View>}
     {!wide && !compact && pinnedNav}
     {compact && <View style={{ width: '100%', alignItems: 'center' }}>{pinnedNav}</View>}
     {!compact && <View style={{ marginLeft: 'auto' }}>{registerButton}</View>}
@@ -2116,7 +2116,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     <View style={styles.shell}>
       <View style={styles.main}>
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, backgroundColor: 'rgba(5,16,12,0.96)' }}><View style={[styles.inner, compact && { paddingHorizontal: 16 }]}>{fixedHeader}</View></View>
-        <ScrollView ref={scrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, width: '100%', maxWidth: '100%', paddingTop: compact ? 124 : 78, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
+        <ScrollView ref={scrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, width: '100%' }} contentContainerStyle={{ flexGrow: 1, width: '100%', maxWidth: '100%', paddingTop: compact ? 124 : 92, paddingBottom: 48, position: 'relative' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
           <View testID="scroll-backdrop" pointerEvents="none" style={styles.scrollBackdrop}>
             <BlurTargetView ref={ambientRef} pointerEvents="none" style={styles.ambience}><View testID="ambient-glow-a" style={styles.glowA} /><View testID="ambient-glow-b" style={styles.glowB} /><View testID="ambient-glow-c" style={styles.glowC} /></BlurTargetView>
             <BlurView pointerEvents="none" blurTarget={ambientRef} intensity={62} tint="dark" blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : 'none'} style={styles.backgroundBlur} />
