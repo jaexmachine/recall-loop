@@ -241,6 +241,21 @@ function splitQuestions(raw: string) {
   return raw.split('\n').map((q) => q.trim().replace(/^\s*(?:\d+[.)]|[-*])\s*/, '')).filter(Boolean);
 }
 
+function prepareStudyItems<T>(items: T[], historyFilter: 'all' | 'new' | 'missed', count: 'all' | 5 | 10 | 20, shuffle: boolean, seen: Set<string>, missed: Set<string>, getKey: (item: T) => string) {
+  let prepared = items.filter((item) => {
+    const key = getKey(item).trim().toLocaleLowerCase();
+    return historyFilter === 'new' ? !seen.has(key) : historyFilter === 'missed' ? missed.has(key) : true;
+  });
+  if (shuffle) {
+    prepared = [...prepared];
+    for (let index = prepared.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [prepared[index], prepared[swapIndex]] = [prepared[swapIndex], prepared[index]];
+    }
+  }
+  return count === 'all' ? prepared : prepared.slice(0, count);
+}
+
 function hashText(value: string) {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -790,11 +805,16 @@ export default function App() {
   const [folderOpen, setFolderOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [selectedQuestionFileIds, setSelectedQuestionFileIds] = useState<string[] | null>(null);
   const [materialsTab, setMaterialsTab] = useState<'sources' | 'add' | 'summary'>('sources');
   const [addTab, setAddTab] = useState<'notes' | 'questions'>('notes');
   const [showMatchReview, setShowMatchReview] = useState(false);
   const [expandedMatchIndex, setExpandedMatchIndex] = useState<number | null>(null);
   const [studyFormat, setStudyFormat] = useState<'flashcards' | 'qa' | 'read'>('qa');
+  const [questionHistoryFilter, setQuestionHistoryFilter] = useState<'all' | 'new' | 'missed'>('all');
+  const [questionCount, setQuestionCount] = useState<'all' | 5 | 10 | 20>('all');
+  const [shuffleQuestions, setShuffleQuestions] = useState(false);
+  const [activeSessionQuestions, setActiveSessionQuestions] = useState<string[] | null>(null);
   const [readMaterialIndex, setReadMaterialIndex] = useState(0);
   const [flashcardRevealed, setFlashcardRevealed] = useState(false);
   const flashcardFlip = useRef(new Animated.Value(0)).current;
@@ -1005,6 +1025,8 @@ export default function App() {
 
   const activeSubject = subjects.find((subject) => subject.id === activeSubjectId) || null;
   const sourceFiles = activeSubject?.files.filter((file) => file.role === 'source') || [];
+  const questionFiles = activeSubject?.files.filter((file) => file.role === 'questions') || [];
+  const selectedQuestionFiles = selectedQuestionFileIds === null ? questionFiles : questionFiles.filter((file) => selectedQuestionFileIds.includes(file.id));
   const visibleSourceIndex = Math.max(0, sourceFiles.findIndex((file) => file.id === previewSourceId));
   const visibleSourceFile = sourceFiles[visibleSourceIndex] || null;
   const selectedSource = activeSubject?.files.find((file) => file.id === selectedSourceId && file.role === 'source') || null;
@@ -1050,14 +1072,44 @@ export default function App() {
   const questionList = useMemo(() => splitQuestions(questionsText), [questionsText]);
   const importedFlashcards = activeSubject?.flashcards || [];
   const importedMultipleChoice = activeSubject?.multipleChoiceQuestions || [];
-  const importedQuestionKeys = new Set(importedFlashcards.map((card) => card.front.trim().toLocaleLowerCase()));
+  const questionFileIdsByPrompt = new Map<string, string[]>();
+  questionFiles.forEach((file) => splitQuestions(file.text).forEach((prompt) => {
+    const key = prompt.trim().toLocaleLowerCase();
+    questionFileIdsByPrompt.set(key, [...(questionFileIdsByPrompt.get(key) || []), file.id]);
+  }));
+  const matchesQuestionFile = (source: string, prompt: string) => {
+    const promptFileIds = questionFileIdsByPrompt.get(prompt.trim().toLocaleLowerCase()) || [];
+    if (promptFileIds.length) return promptFileIds.some((id) => selectedQuestionFiles.some((file) => file.id === id));
+    if (!source.trim()) return true;
+    const normalized = source.trim().toLocaleLowerCase();
+    const questionFile = questionFiles.find((file) => {
+      const stem = file.name.replace(/\.[^.]+$/, '').trim().toLocaleLowerCase();
+      return normalized === stem || normalized.startsWith(`${stem} ·`);
+    });
+    return !questionFile || selectedQuestionFiles.some((file) => file.id === questionFile.id);
+  };
+  const selectedImportedFlashcards = importedFlashcards.filter((card) => matchesQuestionFile(card.source, card.front));
+  const selectedImportedMultipleChoice = importedMultipleChoice.filter((item) => matchesQuestionFile(item.source, item.question));
+  const unselectedImportedQuestionKeys = new Set([
+    ...importedFlashcards.filter((card) => !matchesQuestionFile(card.source, card.front)).map((card) => card.front.trim().toLocaleLowerCase()),
+    ...importedMultipleChoice.filter((item) => !matchesQuestionFile(item.source, item.question)).map((item) => item.question.trim().toLocaleLowerCase()),
+  ]);
+  const practiceQuestionList = questionList.filter((question) => !unselectedImportedQuestionKeys.has(question.trim().toLocaleLowerCase()));
+  const importedQuestionKeys = new Set(selectedImportedFlashcards.map((card) => card.front.trim().toLocaleLowerCase()));
   const allFlashcards: ImportedFlashcard[] = [
-    ...importedFlashcards,
-    ...questionList.filter((question) => !importedQuestionKeys.has(question.trim().toLocaleLowerCase())).map((front) => ({ front, back: '', source: '' })),
+    ...selectedImportedFlashcards,
+    ...practiceQuestionList.filter((question) => !importedQuestionKeys.has(question.trim().toLocaleLowerCase())).map((front) => ({ front, back: '', source: '' })),
   ];
   const flashcardDeck = flashcardReviewDeck || allFlashcards;
-  const unknownFlashcards = allFlashcards.filter((card) => flashcardRatings[flashcardKey(card)] === 'unknown');
+  const unknownFlashcards = flashcardDeck.filter((card) => flashcardRatings[flashcardKey(card)] === 'unknown');
   const knownFlashcardCount = allFlashcards.filter((card) => flashcardRatings[flashcardKey(card)] === 'known').length;
+  const seenQuestionKeys = new Set(history.map((attempt) => attempt.question.trim().toLocaleLowerCase()));
+  const missedQuestionKeys = new Set(history.filter((attempt) => attempt.outcome === 'missed' || attempt.outcome === 'needs-review').map((attempt) => attempt.question.trim().toLocaleLowerCase()));
+  const matchingQuestionCandidates = prepareStudyItems(practiceQuestionList, questionHistoryFilter, 'all', false, seenQuestionKeys, missedQuestionKeys, (question) => question);
+  const matchingFlashcardCandidates = prepareStudyItems(allFlashcards, questionHistoryFilter, 'all', false, new Set(Object.keys(flashcardRatings)), new Set(Object.entries(flashcardRatings).filter(([, rating]) => rating === 'unknown').map(([key]) => key)), flashcardKey);
+  const selectedQuestionCandidates = prepareStudyItems(practiceQuestionList, questionHistoryFilter, questionCount, shuffleQuestions, seenQuestionKeys, missedQuestionKeys, (question) => question);
+  const selectedFlashcardCandidates = prepareStudyItems(allFlashcards, questionHistoryFilter, questionCount, shuffleQuestions, new Set(Object.keys(flashcardRatings)), new Set(Object.entries(flashcardRatings).filter(([, rating]) => rating === 'unknown').map(([key]) => key)), flashcardKey);
+  const selectedQuizCandidates = prepareStudyItems(selectedImportedMultipleChoice, questionHistoryFilter, questionCount, shuffleQuestions, seenQuestionKeys, missedQuestionKeys, (item) => item.question);
   const selectedRagSources: { id: string; name: string; segments: SourceChunkInput[] }[] = [
     ...(selectedSourceIds.includes('__notes__') && notes.trim() ? [{ id: '__notes__', name: 'Subject notes', segments: asStudySegments(notes).map((segment) => ({ sourceId: '__notes__', sourceName: 'Subject notes', label: segment.label, text: segment.text })) }] : []),
     ...selectedStudyFiles.map((file) => ({ id: file.id, name: file.name, segments: fileSegments(file).map((segment) => ({ sourceId: file.id, sourceName: file.name, label: `${file.name} · ${segment.label}`, text: segment.text })) })),
@@ -1069,13 +1121,13 @@ export default function App() {
   const aiSelectedSourceCount = selectedSourceIds.filter((id) => id === '__notes__' ? !!notes.trim() : selectedStudyFiles.some((file) => file.id === id)).length;
   const sourceParagraphs = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((text) => ({ text: text.trim(), sourceLabel: segment.label }))).filter((item) => item.text);
   const hasStudyContent = studySourceText.trim().length > 0 || questionList.length > 0 || importedFlashcards.length > 0;
-  const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : (questionList[questionIndex] || 'What is the main idea of this module?');
+  const currentQuestion = demoMaterial ? (demoQuiz[questionIndex % demoQuiz.length]?.question || 'What is the main idea of this module?') : ((activeSessionQuestions || questionList)[questionIndex] || 'What is the main idea of this module?');
   useEffect(() => { setAiFeedback(null); }, [currentQuestion]);
   const currentDemoQuiz = demoQuiz[questionIndex % demoQuiz.length];
-  const currentImportedQuiz = importedMultipleChoice.find((item) => item.question === currentQuestion) || null;
+  const currentImportedQuiz = selectedImportedMultipleChoice.find((item) => item.question === currentQuestion) || null;
   const quizOptions = currentImportedQuiz?.options || currentDemoQuiz.options;
   const correctAnswer = currentImportedQuiz?.correctIndex ?? currentDemoQuiz.correct;
-  const hasNextQuestion = questionIndex < questionList.length - 1;
+  const hasNextQuestion = questionIndex < (activeSessionQuestions || questionList).length - 1;
   const sourceOptions = studySourceSegments.flatMap((segment) => segment.text.split(/\n\s*\n/).map((passage) => ({ passage: passage.trim(), sourceLabel: segment.label, sourceFileId: segment.sourceFileId }))).filter(({ passage }) => passage.length > 45 && !/^[A-Z\s]+$/.test(passage)).map((item, index) => ({ ...item, passageIndex: index + 1 }));
   const moduleTitle = sourceScope === 'file' && selectedSource ? selectedSource.name.replace(/\.[^.]+$/, '') : activeSubject?.name || notes.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || 'Untitled module';
   const displayModuleTitle = demoMaterial ? 'Cellular respiration' : !hasStudyContent ? 'No study set yet' : moduleTitle.length > 52 ? `${moduleTitle.slice(0, 49)}…` : moduleTitle;
@@ -1290,6 +1342,7 @@ export default function App() {
       setBusy(true);
       const parsedCards: ImportedFlashcard[] = [];
       const parsedChoiceQuestions: ImportedMultipleChoice[] = [];
+      const parsedQuestionFiles: StudyFile[] = [];
       const failures: string[] = [];
       for (const [index, file] of files.entries()) {
         setNotice(`Reading quiz ${index + 1} of ${files.length}: ${file.name}`);
@@ -1312,9 +1365,15 @@ export default function App() {
               ? 'No usable content found. Use Question/Answer or Front/Back for cards, or question, options A–D, and correct answer for a quiz.'
               : 'No questions were found. Use a supported practice quiz HTML file or an answered quiz-results page.');
           }
-          parsedCards.push(...extracted);
-          parsedChoiceQuestions.push(...choices);
-          parsedCards.push(...choices.map((item) => ({ front: item.question, back: item.options[item.correctIndex], source: [item.source, item.module].filter(Boolean).join(' · ') })));
+          parsedCards.push(...extracted.map((card) => ({ ...card, source: card.source.trim() || source })));
+          const attributedChoices = choices.map((item) => ({ ...item, source: item.source.trim() || source }));
+          parsedChoiceQuestions.push(...attributedChoices);
+          parsedCards.push(...attributedChoices.map((item) => ({ front: item.question, back: item.options[item.correctIndex], source: [item.source, item.module].filter(Boolean).join(' · ') })));
+          const prompts = [...choices.map((item) => item.question), ...extracted.map((card) => card.front)];
+          if (prompts.length) {
+            const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            parsedQuestionFiles.push({ id, name: file.name, text: prompts.join('\n'), segments: prompts.map((text, promptIndex) => ({ label: `Question ${promptIndex + 1}`, text, sourceFileId: id })), role: 'questions' });
+          }
         } catch (error) {
           failures.push(`${file.name}: ${error instanceof Error ? error.message : 'could not be read'}`);
         }
@@ -1355,7 +1414,8 @@ export default function App() {
         const key = item.question.trim().toLocaleLowerCase();
         if (!questionKeys.has(key)) { questionKeys.add(key); nextQuestions.push(item.question); }
       }
-      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, flashcards: nextCards, multipleChoiceQuestions: nextChoiceQuestions } : subject));
+      setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, ...parsedQuestionFiles], flashcards: nextCards, multipleChoiceQuestions: nextChoiceQuestions } : subject));
+      setSelectedQuestionFileIds((previous) => previous === null ? null : [...new Set([...previous, ...parsedQuestionFiles.map((file) => file.id)])]);
       setQuestionsText(nextQuestions.map((question, questionIndex) => `${questionIndex + 1}. ${question}`).join('\n'));
       setMatches(buildMatches(studySourceSegments, nextQuestions));
       setDemoMaterial(false);
@@ -1441,6 +1501,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
       const existingChoiceKeys = new Set((activeSubject.multipleChoiceQuestions || []).map((item) => item.question.toLocaleLowerCase()));
       const uniqueChoiceQuestions = importedChoiceQuestions.filter((item) => { const key = item.question.toLocaleLowerCase(); if (existingChoiceKeys.has(key)) return false; existingChoiceKeys.add(key); return true; });
       setSubjects((previous) => previous.map((subject) => subject.id === activeSubject.id ? { ...subject, files: [...subject.files, ...addedFiles], flashcards: [...(subject.flashcards || []), ...uniqueNewCards], multipleChoiceQuestions: [...(subject.multipleChoiceQuestions || []), ...uniqueChoiceQuestions] } : subject));
+      if (kind === 'questions') setSelectedQuestionFileIds((previous) => previous === null ? null : [...new Set([...previous, ...addedFiles.filter((file) => file.role === 'questions').map((file) => file.id)])]);
       if (kind === 'module') {
         const addedSourceFiles = addedFiles.filter((file) => file.role === 'source');
         const nextSelectedIds = [...new Set([...selectedSourceIds, ...addedSourceFiles.map((file) => file.id)])];
@@ -1573,7 +1634,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     if (!next) return;
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, notes, questionsText } : subject));
     setActiveSubjectId(next.id); setNotes(next.notes); setQuestionsText(next.questionsText); setMatches(buildMatches([...asStudySegments(next.notes), ...next.files.filter((file) => file.role === 'source').flatMap(fileSegments)], splitQuestions(next.questionsText)));
-    setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceViewerOpen(false); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false);
+    setSelectedSourceId(null); setSelectedSourceIds([]); setSelectedQuestionFileIds(null); setPreviewSourceId(null); setSourceViewerOpen(false); setSourceScope('subject'); setMaterialsTab('sources'); setDemoMaterial(false);
   };
 
   const openSubject = (id: string) => {
@@ -1589,6 +1650,16 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     const nextIds = selectedSourceIds.includes(sourceId) ? selectedSourceIds.filter((id) => id !== sourceId) : [...selectedSourceIds, sourceId];
     const nextSegments = [...(nextIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && nextIds.includes(file.id)).flatMap(fileSegments) || [])];
     setSelectedSourceIds(nextIds); setSelectedSourceId(null); setSourceScope('selected'); setMatches(buildMatches(nextSegments, questionList));
+  };
+
+  const toggleQuestionFile = (fileId: string) => {
+    const currentIds = selectedQuestionFileIds ?? questionFiles.map((file) => file.id);
+    setSelectedQuestionFileIds(currentIds.includes(fileId) ? currentIds.filter((id) => id !== fileId) : [...currentIds, fileId]);
+  };
+
+  const selectAllQuestionFiles = () => {
+    const currentIds = selectedQuestionFileIds ?? questionFiles.map((file) => file.id);
+    setSelectedQuestionFileIds(currentIds.length === questionFiles.length ? [] : questionFiles.map((file) => file.id));
   };
 
   const selectAllStudySources = () => {
@@ -1607,18 +1678,20 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const beginStudyFormat = (format: 'flashcards' | 'qa' | 'read') => {
-    if (!selectedSourceIds.length && !(format === 'flashcards' && importedFlashcards.length) && !(format === 'qa' && questionList.length)) { notify('Select at least one source to study.'); return; }
-    if (format === 'flashcards' && !selectedSourceIds.length && importedFlashcards.length) {
-      setStudyFormat(format); setFlashcardRevealed(false); setFlashcardReviewDeck(null); setFlashcardRatings({}); setFlashcardSourceResult(null); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study'); setDemoMaterial(false);
-      return;
-    }
-    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); if (format === 'flashcards') { setFlashcardReviewDeck(null); setFlashcardRatings({}); setFlashcardSourceResult(null); setQuestionIndex(0); } setReadMaterialIndex(0); setPreviewSlideIndex(0);
     const sourceSegments = [...(selectedSourceIds.includes('__notes__') ? asStudySegments(notes) : []), ...(activeSubject?.files.filter((file) => file.role === 'source' && selectedSourceIds.includes(file.id)).flatMap(fileSegments) || [])];
-    const sessionQuestions = format === 'flashcards' ? flashcardDeck.map((card) => card.front) : questionList.length ? questionList : format === 'read' ? [] : draftPracticeQuestions(sourceSegments.map((segment) => segment.text).join('\n\n'));
-    if (!questionList.length && format !== 'read' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
+    if (format === 'read' && !selectedSourceIds.length) { notify('Select at least one source to read.'); return; }
+    if (format === 'flashcards' && !selectedFlashcardCandidates.length) { notify('No cards match those source and history filters.'); return; }
+    if (format === 'qa' && !selectedSourceIds.length && !selectedQuestionCandidates.length) { notify('Select a source or question set to study.'); return; }
+    setSourceScope('selected'); setStudyFormat(format); setFlashcardRevealed(false); setReadMaterialIndex(0); setPreviewSlideIndex(0);
+    const sessionCards = format === 'flashcards' ? selectedFlashcardCandidates : [];
+    const sessionQuestionPool = format === 'qa' ? (matchingQuestionCandidates.length ? matchingQuestionCandidates : draftPracticeQuestions(sourceSegments.map((segment) => segment.text).join('\n\n'))) : [];
+    const sessionQuestions = format === 'flashcards' ? sessionCards.map((card) => card.front) : format === 'qa' ? prepareStudyItems(sessionQuestionPool, questionHistoryFilter, questionCount, shuffleQuestions, seenQuestionKeys, missedQuestionKeys, (question) => question) : [];
+    if (format !== 'read' && !sessionQuestions.length) { notify('Add questions or clearer source notes before starting practice.'); return; }
+    if (format === 'flashcards') { setFlashcardReviewDeck(sessionCards); setFlashcardSourceResult(null); setQuestionIndex(0); }
+    setActiveSessionQuestions(sessionQuestions);
+    if (!practiceQuestionList.length && format === 'qa' && sessionQuestions.length) setQuestionsText(sessionQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n'));
     setMatches(buildMatches(sourceSegments, sessionQuestions));
-    if (format !== 'read' && !sessionQuestions.length) { notify('Add some questions or clearer source notes before starting practice.'); return; }
-    startStudy(selectedPace);
+    startStudy(selectedPace, 0, sessionQuestions, format !== 'read', true);
   };
 
   const activateSubjectFile = (file: StudyFile) => {
@@ -1636,6 +1709,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     const updatedFiles = activeSubject?.files.filter((file) => file.id !== fileId) || [];
     if (Platform.OS === 'web') { void deleteOriginalDocument(fileId).catch(() => undefined); if (activeSubjectId) void deleteVectorIndex(activeSubjectId, fileId).catch(() => undefined); }
     setSubjects((previous) => previous.map((subject) => subject.id === activeSubjectId ? { ...subject, files: updatedFiles } : subject));
+    setSelectedQuestionFileIds((previous) => previous === null ? null : previous.filter((id) => id !== fileId));
     if (previewSourceId === fileId) { setPreviewSourceId(null); setSourceViewerOpen(false); }
     setSelectedSourceIds((previous) => previous.filter((id) => id !== fileId));
     if (selectedSourceId === fileId) { setSelectedSourceId(null); setSourceScope('subject'); setMatches(buildMatches([...asStudySegments(notes), ...updatedFiles.filter((file) => file.role === 'source').flatMap(fileSegments)], questionList)); }
@@ -1689,11 +1763,11 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     } finally { setAiBusy(false); setNotice(''); }
   };
 
-  const startDiagnostic = () => { setStudyFormat('qa'); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
+  const startDiagnostic = () => { setStudyFormat('qa'); setActiveSessionQuestions(activeSessionQuestions || selectedQuestionCandidates); setQuestionIndex(0); setPhase('diagnostic'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
   const startModuleReading = () => { setStudyFormat('read'); setReadMaterialIndex(0); setPreviewSlideIndex(0); setShowExtractedText(false); setPhase('module'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); };
-  const startQuiz = async () => {
-    let questions = questionList;
-    if (!questions.length) {
+  const startQuiz = async (questionPool?: string[]) => {
+    let questions = questionPool ?? matchingQuestionCandidates;
+    if (!questions.length && !questionPool) {
       try {
         if (apiKey && studySourceText.trim().length >= 40) {
           setAiBusy(true);
@@ -1709,7 +1783,9 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
         setMatches(buildMatches(studySourceSegments, questions));
       }
     }
+    questions = prepareStudyItems(questions, questionHistoryFilter, questionCount, shuffleQuestions, seenQuestionKeys, missedQuestionKeys, (question) => question);
     if (!questions.length) { notify('Add questions or clearer source text before starting a quiz.'); return; }
+    setActiveSessionQuestions(questions);
     setStudyFormat('qa'); setQuestionIndex(0); setPhase('check'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setNotice('');
   };
 
@@ -1746,7 +1822,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   };
 
   const clearWorkspace = () => {
-    setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]); setSelectedSourceIds([]);
+    setNotes(''); setQuestionsText(''); setMatches([]); setAttempted(0); setCorrect(0); setHistory([]); setSelectedSourceIds([]); setSelectedQuestionFileIds(null); setActiveSessionQuestions(null);
     setDemoMaterial(false); setSubjects([]); setActiveSubjectId(null); setFolderOpen(false); setSelectedSourceId(null); setSelectedSourceIds([]); setPreviewSourceId(null); setSourceViewerOpen(false); setPreviewSlideIndex(0); setShowExtractedText(false); setSourceReader(null); setSourceScope('subject'); setNotice('Your workspace is empty. Create a subject and add notes whenever you’re ready.');
     if (Platform.OS === 'web') {
       window.localStorage.removeItem(storageKey); window.localStorage.removeItem(legacyStorageKey);
@@ -1757,19 +1833,19 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
     setPage('home'); setQuestionIndex(0); setAnswer(null); setAnswerDraft(''); setFlashcardRatings({}); setFlashcardReviewDeck(null); setFlashcardSourceResult(null);
   };
 
-  const startStudy = (pace: Pace = mode, firstQuestionIndex = 0) => {
+  const startStudy = (pace: Pace = mode, firstQuestionIndex = 0, sessionQuestions: string[] = questionList, questionOnly = false, useExplicitSources = false) => {
     const defaultIds = [...(notes.trim() ? ['__notes__'] : []), ...sourceFiles.map((file) => file.id)];
-    const effectiveIds = selectedSourceIds.length ? selectedSourceIds : sourceScope === 'selected' ? [] : defaultIds;
-    if (!effectiveIds.length && (sourceFiles.length || notes.trim())) { notify('Select at least one source before starting.'); setPage('import'); return; }
+    const effectiveIds = useExplicitSources ? selectedSourceIds : selectedSourceIds.length ? selectedSourceIds : sourceScope === 'selected' ? [] : defaultIds;
+    if (!effectiveIds.length && (sourceFiles.length || notes.trim()) && !questionOnly) { notify('Select at least one source before starting.'); setPage('import'); return; }
     if (!selectedSourceIds.length && effectiveIds.length) {
       setSelectedSourceIds(effectiveIds);
       setSourceScope('selected');
-      setMatches(buildMatches([...(effectiveIds.includes('__notes__') ? asStudySegments(notes) : []), ...sourceFiles.filter((file) => effectiveIds.includes(file.id)).flatMap(fileSegments)], questionList));
+      setMatches(buildMatches([...(effectiveIds.includes('__notes__') ? asStudySegments(notes) : []), ...sourceFiles.filter((file) => effectiveIds.includes(file.id)).flatMap(fileSegments)], sessionQuestions));
     }
     const overviewText = [...(effectiveIds.includes('__notes__') && notes.trim() ? [`Subject notes\n${notes}`] : []), ...sourceFiles.filter((file) => effectiveIds.includes(file.id)).flatMap((file) => fileSegments(file).map((segment) => `${file.name} · ${segment.label}\n${segment.text}`))].join('\n\n');
     const overviewHash = hashText(`${activeSubject?.name || 'Study materials'}\n${overviewText}`);
     const hasCachedOverview = aiSummary?.subjectId === (activeSubjectId || '') && aiSummary.sourceHash === overviewHash;
-    setMode(pace); setSelectedPace(pace); setQuestionIndex(Math.max(0, firstQuestionIndex)); setPhase('overview'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study');
+    setActiveSessionQuestions(sessionQuestions); setMode(pace); setSelectedPace(pace); setQuestionIndex(Math.max(0, firstQuestionIndex)); setPhase('overview'); setAnswer(null); setAnswerDraft(''); setAiFeedback(null); setPage('study');
     if (!hasCachedOverview && apiKey && overviewText.trim().length >= 40) void generateSummaryFor(overviewText, activeSubject?.name || 'Study materials', overviewHash);
   };
 
@@ -1920,7 +1996,7 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   const lockInScreen = <View style={[styles.content, { width: '100%', maxWidth: 1120, alignSelf: 'center', alignItems: 'center' }]}>
     <View style={{ width: '100%', maxWidth: 760, alignItems: 'center', gap: 8 }}><Text style={[styles.label, { color: '#8fcba6', textAlign: 'center' }]}>REVIEW</Text><Text style={[styles.title, { marginTop: 2, textAlign: 'center' }]}>Choose a session style</Text></View>
     <View style={[styles.row, { width: '100%', justifyContent: 'center' }]}>{paceOptions.map((option) => { const active = selectedPace === option.id; return <Pressable key={option.id} onPress={() => setSelectedPace(option.id)} accessibilityRole="button" accessibilityState={{ selected: active }} testID="torch-block" style={[styles.card, { flex: compact ? undefined : 1, flexBasis: compact ? '100%' : width <= 900 ? '48%' : undefined, minWidth: compact ? 0 : 240, maxWidth: compact ? '100%' : width <= 900 ? '48%' : 360, minHeight: compact ? 190 : 220, gap: 13, borderColor: active ? 'rgba(90,210,141,0.55)' : palette.line, backgroundColor: active ? 'rgba(24,70,44,0.78)' : 'rgba(17,31,26,0.70)', padding: compact ? 18 : 20 }]}><View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text style={{ fontSize: 22, color: active ? '#9ff0ba' : palette.yellow }}>{option.icon}</Text><Text style={{ color: active ? '#d9ffe2' : palette.muted, fontSize: 11, fontWeight: '800' }}>{option.time.toUpperCase()}</Text></View><Text style={{ color: palette.ink, fontSize: 22, fontWeight: '800' }}>{option.title}</Text><Text style={[styles.body, { flex: 1 }]}>{option.description}</Text></Pressable>; })}</View>
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap', marginTop: 2 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open Materials'}</Text></Pressable></View>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap', marginTop: 2 }}><ActionButton label={hasStudyContent ? `Start ${selectedOption.time} ${selectedOption.title.toLowerCase()} session →` : 'Add materials to begin →'} onPress={() => hasStudyContent ? startStudy(selectedPace, 0, selectedQuestionCandidates, true) : setPage('import')} /><Pressable onPress={() => setPage('import')} style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#b9c5c0', fontWeight: '700' }}>{hasStudyContent ? 'Choose materials' : 'Open Materials'}</Text></Pressable></View>
   </View>;
 
   const importScreen = <View style={styles.content}>
@@ -1950,12 +2026,34 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5 }}><Pressable accessibilityRole="button" accessibilityLabel={`Move ${file.name} earlier`} disabled={index === 0} onPress={() => moveSourceFile(file.id, -1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: index === 0 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↑</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Move ${file.name} later`} disabled={index === sourceFiles.length - 1} onPress={() => moveSourceFile(file.id, 1)} style={{ minWidth: 42, minHeight: 42, alignItems: 'center', justifyContent: 'center', opacity: index === sourceFiles.length - 1 ? 0.4 : 1 }}><Text style={{ color: '#b8e8c7', fontWeight: '800' }}>↓</Text></Pressable><ActionButton compact secondary label="Preview" onPress={() => openSourceViewer(file)} /><ActionButton compact secondary label="Delete" onPress={() => removeSubjectFile(file.id)} /></View>
           </View>)}
         </View>}
-        {activeSubject.files.filter((file) => file.role === 'questions').map((file) => <View key={file.id} style={[styles.card, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: 15 }]}><View style={{ flex: 1, minWidth: 180 }}><Text style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>Question file · {file.text.trim().split(/\s+/).length} words</Text></View><ActionButton compact secondary label="Load questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>)}
+        {!!questionFiles.length && <View style={{ gap: 9 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}><Text style={styles.label}>QUESTION SETS · {selectedQuestionFiles.length} OF {questionFiles.length} SELECTED</Text><Pressable accessibilityRole="button" onPress={selectAllQuestionFiles} style={{ minHeight: 40, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedQuestionFiles.length === questionFiles.length ? 'Clear selection' : 'Select all sets'}</Text></Pressable></View>
+          {questionFiles.map((file) => { const selected = selectedQuestionFiles.some((item) => item.id === file.id); return <View key={file.id} style={[styles.card, { flexDirection: compact ? 'column' : 'row', alignItems: compact ? 'stretch' : 'center', flexWrap: 'wrap', gap: 9, padding: compact ? 12 : 15, borderColor: selected ? 'rgba(90,210,141,0.44)' : palette.line }]}>
+            <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`Select question set ${file.name}`} onPress={() => toggleQuestionFile(file.id)} style={{ flex: 1, minWidth: compact ? 0 : 210, minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 10 }}><View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: selected ? '#7fd79a' : palette.line, backgroundColor: selected ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '900' }}>{selected ? '✓' : ''}</Text></View><View style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={2} style={{ color: palette.ink, fontWeight: '800' }}>{file.name}</Text><Text style={styles.small}>{splitQuestions(file.text).length} prompts · {selected ? 'Included in practice' : 'Not included'}</Text></View></Pressable>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}><ActionButton compact secondary label="Edit questions" onPress={() => activateSubjectFile(file)} /><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${file.name}`} onPress={() => removeSubjectFile(file.id)} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: palette.muted, fontWeight: '700' }}>Delete</Text></Pressable></View>
+          </View>; })}
+        </View>}
         {!notes.trim() && !activeSubject.files.some((file) => file.role === 'source' || file.role === 'questions') && <View style={[styles.card, { alignItems: 'center', paddingVertical: 35, gap: 8 }]}><Text style={{ color: palette.ink, fontSize: 18, fontWeight: '800' }}>No sources yet</Text><Text style={[styles.body, { textAlign: 'center' }]}>Upload lecture material or add subject notes to get started.</Text></View>}
         {(!!notes.trim() || activeSubject.files.some((file) => file.role === 'source') || !!allFlashcards.length || !!importedMultipleChoice.length) && <View testID="torch-block" style={[styles.card, { gap: 12 }]}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><View><Text style={styles.label}>{notes.trim() || sourceFiles.length ? 'STUDY SOURCES' : 'QUESTION BANK'}</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 4 }}>{notes.trim() || sourceFiles.length ? 'Study selected sources' : `${allFlashcards.length} cards · ${importedMultipleChoice.length} quiz questions`}</Text></View>{(notes.trim() || sourceFiles.length > 0) && <Pressable accessibilityRole="button" onPress={selectAllStudySources} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedSourceIds.length === (activeSubject.files.filter((file) => file.role === 'source').length + (notes.trim() ? 1 : 0)) ? 'Clear selection' : 'Select all sources'}</Text></Pressable>}</View>
-          {!!selectedSourceIds.length && <Text style={styles.small}>{selectedSourceIds.length} selected</Text>}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}><ActionButton label="Flashcard review" disabled={!selectedSourceIds.length && !allFlashcards.length} onPress={() => beginStudyFormat('flashcards')} /><ActionButton secondary label="Q&A practice" disabled={!selectedSourceIds.length && !questionList.length} onPress={() => beginStudyFormat('qa')} /><ActionButton secondary label="Read sources" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('read')} />{!!selectedRagSources.length && <ActionButton compact secondary disabled={ragBusy} label={ragBusy ? 'Preparing…' : 'Prepare source lookup'} onPress={() => { if (!apiKey) { setShowApiKeyModal(true); return; } setRagBusy(true); void indexSelectedSources().then((records) => notify(`Source lookup ready · ${records.length} passages indexed.`)).catch((error) => notify(error instanceof Error ? error.message : 'Could not prepare source lookup.')).finally(() => { setRagBusy(false); setRagProgress(''); }); }} />}</View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><View><Text style={styles.label}>STUDY SETUP</Text><Text style={{ color: palette.ink, fontSize: 19, fontWeight: '800', marginTop: 4 }}>Choose a study format</Text></View>{(notes.trim() || sourceFiles.length > 0) && <Pressable accessibilityRole="button" onPress={selectAllStudySources} style={{ minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' }}><Text style={{ color: '#9fe1b5', fontWeight: '800' }}>{selectedSourceIds.length === (activeSubject.files.filter((file) => file.role === 'source').length + (notes.trim() ? 1 : 0)) ? 'Clear sources' : 'Select all sources'}</Text></Pressable>}</View>
+          {!!selectedSourceIds.length && <Text style={styles.small}>{selectedSourceIds.length} lecture source{selectedSourceIds.length === 1 ? '' : 's'} selected</Text>}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>
+            <ActionButton label={`Flashcards · ${selectedFlashcardCandidates.length}`} disabled={!selectedFlashcardCandidates.length} onPress={() => beginStudyFormat('flashcards')} />
+            <ActionButton secondary label={`Q&A · ${selectedQuestionCandidates.length}`} disabled={!selectedQuestionCandidates.length && !selectedSourceIds.length} onPress={() => beginStudyFormat('qa')} />
+            <ActionButton secondary label={`Quiz · ${selectedQuizCandidates.length}`} disabled={!selectedQuizCandidates.length} onPress={() => void startQuiz(selectedImportedMultipleChoice.map((item) => item.question))} />
+            <ActionButton secondary label="Read sources" disabled={!selectedSourceIds.length} onPress={() => beginStudyFormat('read')} />
+            {!!selectedRagSources.length && <ActionButton compact secondary disabled={ragBusy} label={ragBusy ? 'Preparing…' : 'Prepare source lookup'} onPress={() => { if (!apiKey) { setShowApiKeyModal(true); return; } setRagBusy(true); void indexSelectedSources().then((records) => notify(`Source lookup ready · ${records.length} passages indexed.`)).catch((error) => notify(error instanceof Error ? error.message : 'Could not prepare source lookup.')).finally(() => { setRagBusy(false); setRagProgress(''); }); }} />}
+          </View>
+          <View style={{ borderTopWidth: 1, borderColor: palette.line, paddingTop: 11, gap: 9 }}>
+            <Text style={styles.label}>QUESTION HISTORY · {questionHistoryFilter === 'all' ? 'ALL' : questionHistoryFilter === 'new' ? 'NEW' : 'NEEDS REVIEW'}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
+              {([{ id: 'all' as const, label: `All · ${practiceQuestionList.length}` }, { id: 'new' as const, label: `New · ${practiceQuestionList.filter((question) => !seenQuestionKeys.has(question.trim().toLocaleLowerCase())).length}` }, { id: 'missed' as const, label: `Missed · ${practiceQuestionList.filter((question) => missedQuestionKeys.has(question.trim().toLocaleLowerCase())).length}` }]).map((item) => <Pressable key={item.id} accessibilityRole="radio" accessibilityState={{ selected: questionHistoryFilter === item.id }} onPress={() => setQuestionHistoryFilter(item.id)} style={{ minHeight: 40, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 12, borderWidth: 1, borderColor: questionHistoryFilter === item.id ? 'rgba(90,210,141,0.44)' : palette.line, backgroundColor: questionHistoryFilter === item.id ? 'rgba(33,129,91,0.22)' : 'rgba(255,255,255,0.035)' }}><Text style={{ color: questionHistoryFilter === item.id ? '#dff7e6' : palette.muted, fontSize: 12, fontWeight: '700' }}>{item.label}</Text></Pressable>)}
+            </View>
+            <View style={{ flexDirection: compact ? 'column' : 'row', flexWrap: 'wrap', alignItems: compact ? 'stretch' : 'center', justifyContent: 'space-between', gap: 9 }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, alignItems: 'center' }}><Text style={[styles.label, { marginRight: 2 }]}>SESSION SIZE</Text>{([{ id: 5 as const, label: '5' }, { id: 10 as const, label: '10' }, { id: 20 as const, label: '20' }, { id: 'all' as const, label: 'All' }]).map((item) => <Pressable key={item.id} accessibilityRole="radio" accessibilityState={{ selected: questionCount === item.id }} onPress={() => setQuestionCount(item.id)} style={{ minWidth: 42, minHeight: 40, paddingHorizontal: 11, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1, borderColor: questionCount === item.id ? 'rgba(90,210,141,0.44)' : palette.line, backgroundColor: questionCount === item.id ? 'rgba(33,129,91,0.22)' : 'rgba(255,255,255,0.035)' }}><Text style={{ color: questionCount === item.id ? '#dff7e6' : palette.muted, fontSize: 12, fontWeight: '700' }}>{item.label}</Text></Pressable>)}</View>
+              <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: shuffleQuestions }} onPress={() => setShuffleQuestions((value) => !value)} style={{ flexDirection: 'row', minHeight: 44, alignItems: 'center', gap: 8, paddingHorizontal: 7 }}><View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: shuffleQuestions ? '#7fd79a' : palette.line, backgroundColor: shuffleQuestions ? '#21815b' : 'transparent', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 12, fontWeight: '900' }}>{shuffleQuestions ? '✓' : ''}</Text></View><Text style={styles.small}>Shuffle</Text></Pressable>
+            </View>
+          </View>
           {!!ragProgress && <Text style={styles.small}>{ragProgress}</Text>}
         </View>}
         {!!questionList.length && <View style={{ gap: 9 }}>
@@ -1974,16 +2072,17 @@ function GlassCard({ children, style, dark = false }: { children: React.ReactNod
   </View>;
 
   const activeOverview = aiSummary?.subjectId === (activeSubjectId || '') && aiSummary.sourceHash === aiSourceHash ? aiSummary.result : null;
+  const overviewQuestions = activeSessionQuestions || practiceQuestionList;
   const overviewPanel = <View style={[styles.card, { gap: 16 }]}>
-    <View><Text style={styles.label}>AI MODULE OVERVIEW</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', marginTop: 5 }}>Your module, at a glance</Text><Text style={[styles.small, { marginTop: 4 }]}>{displayModuleTitle}</Text></View>
-    {activeOverview ? <><Text style={[styles.body, { color: '#e0ebe4' }]}>{activeOverview.summary}</Text>{!!activeOverview.keyPoints.length && <View style={{ gap: 7 }}><Text style={styles.label}>KEY IDEAS</Text>{activeOverview.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d7e2dc' }]}>• {point}</Text>)}</View>}{!!activeOverview.vocabulary.length && <View style={{ gap: 6 }}><Text style={styles.label}>IMPORTANT TERMS</Text>{activeOverview.vocabulary.slice(0, 4).map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <View style={{ gap: 8, borderRadius: 12, padding: 13, borderWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.035)' }}><Text style={[styles.body, { color: '#d7e2dc' }]}>{aiBusy ? 'Reading your selected sources and preparing an overview…' : apiKey ? 'Generate a concise overview from the selected material.' : 'Connect your AI key to get a source-grounded overview.'}</Text>{!aiBusy && <ActionButton compact secondary label={apiKey ? 'Generate overview' : `Connect ${aiProviderName}`} onPress={() => void generateSummary()} />}</View>}
-    {!!questionList.length && <View style={{ gap: 7, borderTopWidth: 1, borderColor: palette.line, paddingTop: 12 }}><Text style={styles.label}>{questionList.length} PROVIDED QUESTION{questionList.length === 1 ? '' : 'S'}</Text>{questionList.slice(0, 3).map((question, index) => <Text key={`${index}-${question}`} numberOfLines={2} style={styles.small}>{index + 1}. {question}</Text>)}{questionList.length > 3 && <Text style={styles.small}>+ {questionList.length - 3} more</Text>}</View>}
+    <View><Text style={styles.label}>{studySourceText.trim() ? 'STUDY OVERVIEW' : 'QUESTION SET'}</Text><Text style={{ color: palette.ink, fontSize: 20, fontWeight: '800', marginTop: 5 }}>{studySourceText.trim() ? 'Your module, at a glance' : 'Ready when you are'}</Text><Text style={[styles.small, { marginTop: 4 }]}>{displayModuleTitle}</Text></View>
+    {activeOverview ? <><Text style={[styles.body, { color: '#e0ebe4' }]}>{activeOverview.summary}</Text>{!!activeOverview.keyPoints.length && <View style={{ gap: 7 }}><Text style={styles.label}>KEY IDEAS</Text>{activeOverview.keyPoints.map((point, index) => <Text key={`${index}-${point}`} style={[styles.body, { color: '#d7e2dc' }]}>• {point}</Text>)}</View>}{!!activeOverview.vocabulary.length && <View style={{ gap: 6 }}>{activeOverview.vocabulary.slice(0, 4).map(({ term, definition }) => <Text key={term} style={styles.small}><Text style={{ color: palette.ink, fontWeight: '800' }}>{term}: </Text>{definition}</Text>)}</View>}</> : <View style={{ gap: 8, borderRadius: 12, padding: 13, borderWidth: 1, borderColor: palette.line, backgroundColor: 'rgba(255,255,255,0.035)' }}><Text style={[styles.body, { color: '#d7e2dc' }]}>{!studySourceText.trim() ? 'Your selected questions are ready. Add lecture sources any time to connect answers back to the material.' : aiBusy ? 'Reading your selected sources and preparing an overview…' : apiKey ? 'Generate a concise overview from the selected material.' : 'Connect your AI key to get a source-grounded overview.'}</Text>{!!studySourceText.trim() && !aiBusy && <ActionButton compact secondary label={apiKey ? 'Generate overview' : `Connect ${aiProviderName}`} onPress={() => void generateSummary()} />}</View>}
+    {!!overviewQuestions.length && <View style={{ gap: 7, borderTopWidth: 1, borderColor: palette.line, paddingTop: 12 }}><Text style={styles.label}>{overviewQuestions.length} SELECTED QUESTION{overviewQuestions.length === 1 ? '' : 'S'}</Text>{overviewQuestions.slice(0, 3).map((question, index) => <Text key={`${index}-${question}`} numberOfLines={2} style={styles.small}>{index + 1}. {question}</Text>)}{overviewQuestions.length > 3 && <Text style={styles.small}>+ {overviewQuestions.length - 3} more</Text>}</View>}
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9, borderTopWidth: 1, borderColor: palette.line, paddingTop: 12 }}>
-      {studyFormat === 'flashcards' ? <ActionButton label="Start flashcards →" disabled={aiBusy} onPress={() => { setQuestionIndex(0); setFlashcardRevealed(false); setPhase('diagnostic'); }} /> : questionList.length ? <ActionButton label="Start diagnostic →" disabled={aiBusy} onPress={startDiagnostic} /> : <ActionButton label="Read the module →" disabled={aiBusy} onPress={startModuleReading} />}
-      {studyFormat === 'flashcards' && questionList.length > 0 && <ActionButton secondary label="Start with the questions" disabled={aiBusy} onPress={startDiagnostic} />}
-      {studyFormat !== 'flashcards' && questionList.length > 0 && <ActionButton secondary label="Read module first" disabled={aiBusy} onPress={startModuleReading} />}
-      {studyFormat !== 'flashcards' && !questionList.length && <ActionButton secondary label={aiBusy ? 'Preparing quiz…' : 'Take quiz now'} disabled={aiBusy} onPress={() => void startQuiz()} />}
-      {questionList.length > 0 && studyFormat !== 'flashcards' && <ActionButton secondary label="Skip to reading" disabled={aiBusy} onPress={startModuleReading} />}
+      {studyFormat === 'flashcards' ? <ActionButton label="Start flashcards →" disabled={aiBusy || !flashcardDeck.length} onPress={() => { setQuestionIndex(0); setFlashcardRevealed(false); setPhase('diagnostic'); }} /> : overviewQuestions.length ? <ActionButton label="Start diagnostic →" disabled={aiBusy} onPress={startDiagnostic} /> : <ActionButton label="Read the module →" disabled={aiBusy} onPress={startModuleReading} />}
+      {studyFormat === 'flashcards' && overviewQuestions.length > 0 && <ActionButton secondary label="Start with the questions" disabled={aiBusy} onPress={startDiagnostic} />}
+      {studyFormat !== 'flashcards' && overviewQuestions.length > 0 && <ActionButton secondary label="Read module first" disabled={aiBusy} onPress={startModuleReading} />}
+      {studyFormat !== 'flashcards' && !overviewQuestions.length && <ActionButton secondary label={aiBusy ? 'Preparing quiz…' : 'Take quiz now'} disabled={aiBusy} onPress={() => void startQuiz()} />}
+      {overviewQuestions.length > 0 && studyFormat !== 'flashcards' && <ActionButton secondary label="Skip to reading" disabled={aiBusy} onPress={startModuleReading} />}
     </View>
   </View>;
   const phaseStep = phase === 'overview' ? 1 : phase === 'diagnostic' ? 2 : phase === 'module' ? 3 : phase === 'review' ? 3 : 4;
